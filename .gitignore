@@ -1,0 +1,17 @@
+# 数据不入库（文件大，且是公开数据集）
+data/raw/
+data/*.zip
+
+# 清洗后抽样数据也不入库（约 100 万行，几十 MB）
+# 只保留 outputs/ 里的小汇总表（daily/funnel/retention）和图表
+outputs/taobao_clean_sample.csv
+outputs/rfm_users.csv
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# 系统文件
+.DS_Store
