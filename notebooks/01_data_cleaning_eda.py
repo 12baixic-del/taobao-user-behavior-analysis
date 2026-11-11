@@ -1,18 +1,15 @@
-"""01 - 淘宝用户行为数据清洗 + 探索性分析（EDA）
+"""01 - 清洗 + EDA
 
-运行（在 project-data-taobao/ 根目录）：
+在 project-data-taobao/ 根目录跑：
     python notebooks/01_data_cleaning_eda.py
 
-数据：阿里云天池 649，UserBehavior.csv
-    987,994 用户，100,150,807 条记录，2017-11-25 至 2017-12-03
-    字段：user_id, item_id, category_id, behavior_type, timestamp
-    behavior_type：pv 浏览 / buy 购买 / cart 加购 / fav 收藏
-    没有价格列，做不了 GMV，本脚本不编金额。
+数据是天池 649 的 UserBehavior.csv，987,994 用户，100,150,807 条记录，
+2017-11-25 到 2017-12-03。字段就 5 列，没有价格列，做不了 GMV。
 
-产出（outputs/）：
-    taobao_clean_sample.csv  清洗 + 抽样后的行为记录（约 100 万行）
-    daily_summary.csv        每日 PV、UV、各行为数、购买转化率
-    figures/*.png            日 PV/UV、行为类型、Top 类目、小时趋势、购买转化
+跑完出这些东西，放 outputs/ 里：
+    taobao_clean_sample.csv  清洗 + 抽样后的记录，大概 100 万行
+    daily_summary.csv        每天的 PV、UV、各行为数、购买转化率
+    figures/*.png            每天 PV/UV、行为类型、Top 类目、小时趋势、购买转化
 """
 
 import sys
@@ -33,17 +30,17 @@ DATA_FILE = DATA_DIR / "UserBehavior.csv"
 COLUMNS = ["user_id", "item_id", "category_id", "behavior_type", "timestamp"]
 VALID_BEHAVIORS = {"pv", "buy", "cart", "fav"}
 
-# 有效时间窗口：数据集说明的 2017-11-25 至 2017-12-03
+# 有效时间就这 9 天，2017-11-25 到 2017-12-03
 START = pd.Timestamp("2017-11-25 00:00:00")
 END = pd.Timestamp("2017-12-03 23:59:59")
 
-# 原始 1 亿行太多，抽样后分析；固定种子，保证可复现
+# 1 亿行太多了，抽样再分析，种子固定住，结果才能复现
 SAMPLE_N = 1_000_000
 SEED = 42
 
 
 def check_file() -> None:
-    """数据不存在时，打印下载方法并退出，不报看不懂的错。"""
+    """数据没下的话，打印下载方法就退出。"""
     if DATA_FILE.exists():
         return
     print("数据还没下载，缺少以下文件：")
@@ -63,7 +60,7 @@ def main() -> None:
     FIG_DIR.mkdir(parents=True, exist_ok=True)
 
     # ---------- 读入 ----------
-    # 文件无表头，5 列全部按字符串 / 整数读，时间戳后面再转
+    # 文件没表头，5 列按字符串 / 整数读，时间戳后面再转
     df = pd.read_csv(
         DATA_FILE,
         header=None,
@@ -94,13 +91,13 @@ def main() -> None:
     df = df[df["behavior_type"].isin(VALID_BEHAVIORS)].copy()
 
     # ---------- 清洗：时间戳 ----------
-    # timestamp 是秒级 Unix 时间戳；转不出来的记为空并剔除
+    # timestamp 是秒级时间戳，转不出来的记为空，扔掉
     df["datetime"] = pd.to_datetime(df["timestamp"], unit="s", errors="coerce")
     bad_time = int(df["datetime"].isna().sum())
     print(f"\n时间戳无法解析的行：{bad_time:,} 行（已剔除）")
     df = df.dropna(subset=["datetime"]).copy()
 
-    # 超出 2017-11-25 至 2017-12-03 的是异常时间戳，剔除并单独报告
+    # 超出 2017-11-25 到 2017-12-03 的是异常时间戳，扔掉，单独报一下数
     out_of_range = df[(df["datetime"] < START) | (df["datetime"] > END)]
     print(f"超出有效窗口（{START.date()} 至 {END.date()}）的行："
           f"{len(out_of_range):,} 行（已剔除）")
@@ -174,7 +171,7 @@ def main() -> None:
     fig.savefig(FIG_DIR / "behavior_type.png", dpi=150)
     plt.close(fig)
 
-    # 图 3：Top 10 类目（按行为数；类目只有 ID，没有中文名，不编）
+    # 图 3：Top 10 类目（按行为数；类目只有 ID，没有中文名）
     top_cat = df["category_id"].value_counts().head(10)
     print("\nTop 10 类目（按行为数，类目 ID）：")
     print(top_cat)
