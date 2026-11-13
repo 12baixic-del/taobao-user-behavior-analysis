@@ -51,6 +51,7 @@ def load_summaries():
         # 看板只读这些小表，不读 71MB 原始样本（见第 5 节）。
         "top_categories": pd.read_csv(OUTPUTS / "top_categories.csv"),
         "nonpath_split": pd.read_csv(OUTPUTS / "funnel_nonpath_split.csv"),
+        "nonpath_totals": pd.read_csv(OUTPUTS / "funnel_nonpath_totals.csv"),
         "cross_item": pd.read_csv(OUTPUTS / "funnel_cross_item.csv"),
     }
 
@@ -63,6 +64,7 @@ rfm = data["rfm"]
 daily = data["daily"]
 top_categories = data["top_categories"]
 nonpath_split = data["nonpath_split"]
+nonpath_totals = data["nonpath_totals"]
 cross_item = data["cross_item"]
 
 # ---- 顶部关键指标（全部从 CSV 运行时计算，无硬编码业务数字） -----------
@@ -75,9 +77,12 @@ full_path = float(
     ].iloc[0]
 )
 ret_mean = float(retention["retention_rate"].mean())
-buy_users = int(funnel.loc[funnel["stage"] == "buy", "users"].iloc[0])
 nonpath_total = int(nonpath_split["users"].sum())
-nonpath_share = nonpath_total / buy_users
+# P0（第三轮）：分子是非路径购买用户（全部购买用户口径，1,510 人），
+# 分母必须用全部购买用户 6,846，不得用仅有 PV 的购买用户 6,811。
+# 旧代码用 1,510 / 6,811 = 22.2%，与文档/简历的 22.1% 不一致。
+total_buy_users = int(nonpath_totals["total_buy_users"].iloc[0])
+nonpath_share = nonpath_total / total_buy_users
 no_intent_n = int(
     nonpath_split.loc[
         nonpath_split["group_name"] == "no_intent_buyers", "users"
@@ -100,8 +105,8 @@ st.metric(
 )
 st.metric("用户级时序路径完成率（时序口径）", f"{full_path:.1%}",
           help="完成 pv → 意向 → 购买完整路径的用户占浏览用户的比例（用户级跨商品行为顺序，不等于真实商品交易路径）；"
-               f"另有 {nonpath_share:.1%} 的购买用户（{nonpath_total:,} 人）"
-               f"未满足该路径，其中无意向记录 {no_intent_n:,} 人、"
+               f"另有 {nonpath_share:.1%} 的购买用户（{nonpath_total:,}/{total_buy_users:,} 人，"
+               f"占全部购买用户）未满足该路径，其中无意向记录 {no_intent_n:,} 人、"
                f"顺序不满足 {wrong_order_n:,} 人。")
 st.metric("次日留存（9 天简单平均）", f"{ret_mean:.2%}",
           help=f"前 6 个值平均 {ret_early:.1%}，后 2 个值平均 {ret_late:.1%}，见留存图。")
@@ -146,7 +151,8 @@ else:
     st.markdown(
         f"业务解读：时序口径下，浏览→意向 **{intent_conv:.1%}**、"
         f"意向→购买 **{intent_buy:.1%}**，完整路径占浏览用户 **{full_path:.1%}**；"
-        f"另有 {nonpath_share:.1%} 的购买用户（{nonpath_total:,} 人）未满足该路径，"
+        f"另有 {nonpath_share:.1%} 的购买用户（{nonpath_total:,}/{total_buy_users:,} 人，"
+        f"占全部购买用户）未满足该路径，"
         f"其中无意向记录 {no_intent_n:,} 人、顺序不满足 {wrong_order_n:,} 人。"
     )
 
@@ -164,6 +170,9 @@ st.markdown(
     f"完整路径购买用户共 {_path_buyers:,} 人，其中 {_bought_intended:,} 人"
     f"（{_bought_intended / _path_buyers:.1%}）至少购买过一件意向商品，"
     f"{_bought_only_unintended:,} 人购买的全部是未意向过的商品。"
+    "商品级核对（与用户级路径不同）：同一商品的加购/收藏须严格早于对该商品"
+    "的购买，才算“购买过先前意向商品”（同秒不计入；真实样本中同秒配对为 0）。"
+    "用户级完整时序路径只要求行为顺序，不要求同一商品。"
 )
 st.markdown(
     "三率区分：事件次数比（购买次数 / 浏览次数，全样本 "
