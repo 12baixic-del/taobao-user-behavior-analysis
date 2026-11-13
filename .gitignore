@@ -1,17 +1,35 @@
-# 数据不入库（文件大，且是公开数据集）
+# 原始大型数据集与压缩包（不入库）
 data/raw/
 data/*.zip
+data/*.csv
+*.csv.gz
+UserBehavior.csv
 
-# 清洗后抽样数据也不入库（约 100 万行，几十 MB）
-# 只保留 outputs/ 里的小汇总表（daily/funnel/retention）和图表
+# 清洗后抽样数据及用户级明细分表（文件较大，仅保留汇总表与图表）
 outputs/taobao_clean_sample.csv
 outputs/rfm_users.csv
 
-# Python
+# 基准测试临时文件
+benchmarks/tmp*
+
+# Python 缓存与虚拟环境
 __pycache__/
 *.py[cod]
+*$py.class
 .venv/
 venv/
+env/
+.pytest_cache/
+
+# 密钥、环境变量与本机/IDE 路径配置
+.env
+.env.*
+*.key
+*.pem
+.vscode/
+.idea/
+.worktrees/
 
 # 系统文件
 .DS_Store
+Thumbs.db

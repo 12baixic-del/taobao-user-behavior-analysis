@@ -1,0 +1,237 @@
+{
+  "fair_comparison_100k": {
+    "legacy_full": {
+      "runs": [
+        {
+          "mode": "legacy_full",
+          "elapsed_s": 0.0975,
+          "base_rss_mb": 99.29,
+          "end_rss_mb": 121.49,
+          "peak_wset_mb": 127.58,
+          "delta_peak_mb": 28.3,
+          "out_rows": 20125,
+          "out_users": 1000,
+          "cov_buy_users": 392,
+          "seq_buy_users": 210,
+          "rfm_segments": 3,
+          "rfm_min_days": 0
+        },
+        {
+          "mode": "legacy_full",
+          "elapsed_s": 0.0789,
+          "base_rss_mb": 99.27,
+          "end_rss_mb": 121.48,
+          "peak_wset_mb": 127.55,
+          "delta_peak_mb": 28.28,
+          "out_rows": 20125,
+          "out_users": 1000,
+          "cov_buy_users": 392,
+          "seq_buy_users": 210,
+          "rfm_segments": 3,
+          "rfm_min_days": 0
+        },
+        {
+          "mode": "legacy_full",
+          "elapsed_s": 0.0783,
+          "base_rss_mb": 99.43,
+          "end_rss_mb": 119.47,
+          "peak_wset_mb": 127.73,
+          "delta_peak_mb": 28.3,
+          "out_rows": 20125,
+          "out_users": 1000,
+          "cov_buy_users": 392,
+          "seq_buy_users": 210,
+          "rfm_segments": 3,
+          "rfm_min_days": 0
+        }
+      ],
+      "avg_elapsed_s": 0.0849,
+      "avg_peak_wset_mb": 127.62,
+      "avg_delta_peak_mb": 28.29
+    },
+    "phase4_twopass": {
+      "runs": [
+        {
+          "mode": "phase4_twopass",
+          "elapsed_s": 0.1472,
+          "base_rss_mb": 100.14,
+          "end_rss_mb": 103.91,
+          "peak_wset_mb": 130.09,
+          "delta_peak_mb": 29.95,
+          "out_rows": 18671,
+          "out_users": 936,
+          "cov_buy_users": 386,
+          "seq_buy_users": 188,
+          "rfm_segments": 3,
+          "rfm_min_days": 0
+        },
+        {
+          "mode": "phase4_twopass",
+          "elapsed_s": 0.1742,
+          "base_rss_mb": 99.27,
+          "end_rss_mb": 109.23,
+          "peak_wset_mb": 130.25,
+          "delta_peak_mb": 30.98,
+          "out_rows": 18671,
+          "out_users": 936,
+          "cov_buy_users": 386,
+          "seq_buy_users": 188,
+          "rfm_segments": 3,
+          "rfm_min_days": 0
+        },
+        {
+          "mode": "phase4_twopass",
+          "elapsed_s": 0.149,
+          "base_rss_mb": 99.34,
+          "end_rss_mb": 107.95,
+          "peak_wset_mb": 131.14,
+          "delta_peak_mb": 31.8,
+          "out_rows": 18671,
+          "out_users": 936,
+          "cov_buy_users": 386,
+          "seq_buy_users": 188,
+          "rfm_segments": 3,
+          "rfm_min_days": 0
+        }
+      ],
+      "avg_elapsed_s": 0.1568,
+      "avg_peak_wset_mb": 130.49,
+      "avg_delta_peak_mb": 30.91
+    },
+    "phase5_singlepass": {
+      "runs": [
+        {
+          "mode": "phase5_singlepass",
+          "elapsed_s": 0.0886,
+          "base_rss_mb": 99.37,
+          "end_rss_mb": 110.77,
+          "peak_wset_mb": 122.8,
+          "delta_peak_mb": 23.43,
+          "out_rows": 19985,
+          "out_users": 993,
+          "cov_buy_users": 389,
+          "seq_buy_users": 210,
+          "rfm_segments": 3,
+          "rfm_min_days": 0
+        },
+        {
+          "mode": "phase5_singlepass",
+          "elapsed_s": 0.0898,
+          "base_rss_mb": 100.12,
+          "end_rss_mb": 110.29,
+          "peak_wset_mb": 123.99,
+          "delta_peak_mb": 23.87,
+          "out_rows": 19985,
+          "out_users": 993,
+          "cov_buy_users": 389,
+          "seq_buy_users": 210,
+          "rfm_segments": 3,
+          "rfm_min_days": 0
+        },
+        {
+          "mode": "phase5_singlepass",
+          "elapsed_s": 0.1108,
+          "base_rss_mb": 99.32,
+          "end_rss_mb": 110.79,
+          "peak_wset_mb": 122.81,
+          "delta_peak_mb": 23.49,
+          "out_rows": 19985,
+          "out_users": 993,
+          "cov_buy_users": 389,
+          "seq_buy_users": 210,
+          "rfm_segments": 3,
+          "rfm_min_days": 0
+        }
+      ],
+      "avg_elapsed_s": 0.0964,
+      "avg_peak_wset_mb": 123.2,
+      "avg_delta_peak_mb": 23.6
+    }
+  },
+  "tiered_scale_tests": [
+    {
+      "n_rows": 100000,
+      "csv_size_mb": 2.92,
+      "gen_s": 0.09,
+      "benchmark": {
+        "mode": "phase5_singlepass",
+        "elapsed_s": 0.0801,
+        "base_rss_mb": 99.36,
+        "end_rss_mb": 115.22,
+        "peak_wset_mb": 127.8,
+        "delta_peak_mb": 28.45,
+        "out_rows": 100000,
+        "out_users": 5000,
+        "cov_buy_users": 2007,
+        "seq_buy_users": 1028,
+        "rfm_segments": 3,
+        "rfm_min_days": 0
+      },
+      "all_selected_users_complete": true,
+      "completeness_diff_rows": 0
+    },
+    {
+      "n_rows": 1000000,
+      "csv_size_mb": 30.15,
+      "gen_s": 0.99,
+      "benchmark": {
+        "mode": "phase5_singlepass",
+        "elapsed_s": 0.6678,
+        "base_rss_mb": 100.21,
+        "end_rss_mb": 108.74,
+        "peak_wset_mb": 241.45,
+        "delta_peak_mb": 141.24,
+        "out_rows": 99998,
+        "out_users": 4978,
+        "cov_buy_users": 1958,
+        "seq_buy_users": 1020,
+        "rfm_segments": 3,
+        "rfm_min_days": 0
+      },
+      "all_selected_users_complete": true,
+      "completeness_diff_rows": 0,
+      "phase4_twopass_baseline": {
+        "mode": "phase4_twopass",
+        "elapsed_s": 1.0955,
+        "base_rss_mb": 99.16,
+        "end_rss_mb": 115.3,
+        "peak_wset_mb": 207.37,
+        "delta_peak_mb": 108.21,
+        "out_rows": 98979,
+        "out_users": 4955,
+        "cov_buy_users": 1945,
+        "seq_buy_users": 1013,
+        "rfm_segments": 4,
+        "rfm_min_days": 0
+      }
+    },
+    {
+      "n_rows": 10000000,
+      "csv_size_mb": 310.99,
+      "gen_s": 9.94,
+      "benchmark": {
+        "mode": "phase5_singlepass",
+        "elapsed_s": 5.3018,
+        "base_rss_mb": 99.98,
+        "end_rss_mb": 118.77,
+        "peak_wset_mb": 249.89,
+        "delta_peak_mb": 149.9,
+        "out_rows": 100000,
+        "out_users": 5018,
+        "cov_buy_users": 1990,
+        "seq_buy_users": 1039,
+        "rfm_segments": 3,
+        "rfm_min_days": 0
+      },
+      "all_selected_users_complete": true,
+      "completeness_diff_rows": 0
+    }
+  ],
+  "sampling_comparison_100k": {
+    "legacy_rows": 20125,
+    "phase5_rows": 19985,
+    "legacy_users": 1000,
+    "phase5_users": 993,
+    "all_users_100pct_complete": true
+  }
+}

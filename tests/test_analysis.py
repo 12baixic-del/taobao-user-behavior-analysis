@@ -1,0 +1,234 @@
+import importlib.util
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+
+
+def load_module(rel_path: str, name: str):
+    spec = importlib.util.spec_from_file_location(name, REPO_ROOT / rel_path)
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules[name] = mod
+    spec.loader.exec_module(mod)
+    return mod
+
+
+eda = load_module("notebooks/01_data_cleaning_eda.py", "eda_mod")
+rfm_mod = load_module("notebooks/02_funnel_rfm_analysis.py", "rfm_mod")
+
+
+class TestCleaningStreamingAndTimezone(unittest.TestCase):
+    def test_utc_to_beijing_window_boundary(self):
+        """验证 Unix 时间戳按北京时间 (UTC+8) 解析与上/下边界窗口过滤。"""
+        df = pd.DataFrame({
+            "user_id": [1, 2, 3, 4],
+            "item_id": [10, 20, 30, 40],
+            "category_id": [100, 200, 300, 400],
+            "behavior_type": ["pv", "pv", "buy", "pv"],
+            # 1511539199 = 2017-11-24 23:59:59 CST (剔除)
+            # 1511539200 = 2017-11-25 00:00:00 CST (保留)
+            # 1512316799 = 2017-12-03 23:59:59 CST (保留)
+            # 1512316800 = 2017-12-04 00:00:00 CST (剔除)
+            "timestamp": [1511539199, 1511539200, 1512316799, 1512316800],
+        })
+        cleaned = eda.clean_behavior_df(df, verbose=False)
+        self.assertEqual(cleaned["user_id"].tolist(), [2, 3])
+
+    def test_stream_clean_and_sample_cross_chunk_consistency(self):
+        """目标一：验证分块流式读取跨 chunk 去重与按 user_id 完整保留用户序列。"""
+        rows = []
+        for uid in range(1, 13):  # 12 名用户，每人 4 条不同行为，分散写入 CSV
+            for j, b in enumerate(["pv", "cart", "fav", "buy"]):
+                rows.append((uid, 100 + j, 1, b, 1511568000 + j * 60))
+        # 为全部用户追加跨 chunk 的完全重复行与超范围行，确保任意抽样集合均触发跨块去重
+        for uid in range(1, 13):
+            rows.append((uid, 100, 1, "pv", 1511568000))
+        rows.append((99, 999, 1, "pv", 1483228800))
+
+        with tempfile.TemporaryDirectory() as tmp:
+            csv_path = Path(tmp) / "UserBehavior.csv"
+            pd.DataFrame(rows).to_csv(csv_path, header=False, index=False)
+
+            sampled = eda.stream_clean_and_sample(
+                csv_path, target_rows=16, seed=42, chunksize=5, verbose=False
+            )
+            self.assertFalse(sampled.empty)
+            counts_per_user = sampled.groupby("user_id").size()
+            # 每位入选用户均必须完整保留 4 条去重后行为
+            self.assertTrue((counts_per_user == 4).all())
+
+    def test_stream_clean_empty_after_filter(self):
+        """边界测试：全部记录无效时分块流式返回空表且不报错。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            csv_path = Path(tmp) / "UserBehavior.csv"
+            pd.DataFrame([(1, 10, 1, "invalid", 1511568000)]).to_csv(csv_path, header=False, index=False)
+            res = eda.stream_clean_and_sample(csv_path, target_rows=10, chunksize=2, verbose=False)
+            self.assertTrue(res.empty)
+
+    def test_stream_adaptive_threshold_preserves_full_user_sequences(self):
+        """第五阶段回归测试：触发 high_water 阈值收紧时，仍完整保留入选 user_id 的全部行为记录。"""
+        rows = []
+        # 80 名用户各 5 条行为记录（共 400 行），刻意交错分布在不同 chunk 中
+        for step in range(5):
+            for uid in range(1, 81):
+                rows.append((uid, 100 + step, 10, "pv", 1511568000 + step * 3600 + uid))
+
+        with tempfile.TemporaryDirectory() as tmp:
+            csv_path = Path(tmp) / "UserBehavior.csv"
+            pd.DataFrame(rows).to_csv(csv_path, header=False, index=False)
+            sampled = eda.stream_clean_and_sample(
+                csv_path, target_rows=60, seed=42, chunksize=50, verbose=False
+            )
+            self.assertFalse(sampled.empty)
+            self.assertLess(len(sampled), 400)
+            # 入选用户每人均必须完整保留全部 5 条行为，绝不允许半截序列
+            counts_per_user = sampled.groupby("user_id").size()
+            self.assertTrue(
+                (counts_per_user == 5).all(),
+                f"发现未完整保留全部记录的用户: {counts_per_user[counts_per_user != 5].to_dict()}",
+            )
+
+    def test_stream_dirty_rows_and_skewed_single_user_safe(self):
+        """第五阶段边界测试：脏行(缺失/非数字)容错 + 单一大户极端倾斜不删空不崩溃。"""
+        rows = [
+            ("", 101, 10, "pv", 1511568000),        # 缺失 user_id
+            ("bad", 102, 10, "pv", 1511568000),     # 非法 user_id
+            (999, 103, 10, "pv", "not_a_ts"),       # 非法 timestamp
+        ]
+        # 单一大户 uid=1 占 120 条记录（超过 high_water=75），另加 uid=2 占 5 条
+        for i in range(120):
+            rows.append((1, 1000 + i, 10, "pv", 1511568000 + i))
+        for i in range(5):
+            rows.append((2, 2000 + i, 10, "buy", 1511568000 + i))
+
+        with tempfile.TemporaryDirectory() as tmp:
+            csv_path = Path(tmp) / "UserBehavior.csv"
+            pd.DataFrame(rows).to_csv(csv_path, header=False, index=False)
+            sampled = eda.stream_clean_and_sample(
+                csv_path, target_rows=20, seed=42, chunksize=30, verbose=False
+            )
+            self.assertFalse(sampled.empty)
+            # 确认至少保留 1 名用户且其完整序列未损坏
+            for uid, grp in sampled.groupby("user_id"):
+                expected_cnt = 120 if uid == 1 else 5
+                self.assertEqual(len(grp), expected_cnt)
+
+    def test_stream_invalid_params_and_zero_target(self):
+        """第五阶段边界测试：target_rows<=0 返回空表，chunksize<=0 显式报错。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            csv_path = Path(tmp) / "UserBehavior.csv"
+            pd.DataFrame([(1, 10, 1, "pv", 1511568000)]).to_csv(csv_path, header=False, index=False)
+            empty_res = eda.stream_clean_and_sample(csv_path, target_rows=0, verbose=False)
+            self.assertTrue(empty_res.empty)
+            with self.assertRaises(ValueError):
+                eda.stream_clean_and_sample(csv_path, target_rows=10, chunksize=0, verbose=False)
+
+    def test_daily_summary_zero_pv_safe(self):
+        """边界测试：无 pv 仅有 buy 时不产生 inf。"""
+        no_pv = pd.DataFrame({
+            "date": [pd.Timestamp("2017-12-03").date()],
+            "user_id": [1001],
+            "behavior_type": ["buy"],
+        })
+        daily = eda.compute_daily_summary(no_pv)
+        self.assertEqual(int(daily.iloc[0]["buy"]), 1)
+        self.assertTrue(pd.isna(daily.iloc[0]["buy_rate_pv"]))
+
+
+class TestRFMBusinessSegments(unittest.TestCase):
+    def test_days_since_last_active_no_negative_and_clip(self):
+        """回归测试：当天活跃为 0，且未来时间戳下限截断为 0。"""
+        s = pd.Series([
+            pd.Timestamp("2017-12-03 18:30:00"),
+            pd.Timestamp("2017-12-04 01:00:00"),
+            pd.Timestamp("2017-12-02 23:59:59"),
+        ])
+        days = rfm_mod.compute_days_since_last_active(s, observe_date=pd.Timestamp("2017-12-03").date())
+        self.assertEqual(days.tolist(), [0, 0, 1])
+
+    def test_rfm_five_segments_with_heavy_zero_buyers(self):
+        """目标二：验证 95%+ 零购买用户分布下，5 个业务分层均有效区分且不退化为 3 类。"""
+        records = []
+        # 95 名零购买用户：部分近期活跃 (12-03)，部分沉睡 (11-25)
+        for uid in range(1, 48):
+            records.append((uid, "pv", pd.Timestamp("2017-12-03 10:00:00")))
+        for uid in range(48, 96):
+            records.append((uid, "pv", pd.Timestamp("2017-11-25 10:00:00")))
+        # 潜力新客：1 次购买 + 近期活跃 (12-03)
+        records.append((96, "buy", pd.Timestamp("2017-12-03 12:00:00")))
+        # 重要价值用户：2 次购买 + 近期活跃 (12-02)
+        records.append((97, "buy", pd.Timestamp("2017-12-01 12:00:00")))
+        records.append((97, "buy", pd.Timestamp("2017-12-02 12:00:00")))
+        # 流失风险的高价值用户：3 次购买 + 早期活跃 (11-26)
+        for h in (10, 11, 12):
+            records.append((98, "buy", pd.Timestamp(f"2017-11-26 {h}:00:00")))
+
+        df = pd.DataFrame(records, columns=["user_id", "behavior_type", "datetime"])
+        rfm, seg_summary = rfm_mod.compute_rfm(df, observe_date=pd.Timestamp("2017-12-03").date())
+
+        self.assertEqual(set(seg_summary["segment"]), {
+            "重要价值用户",
+            "流失风险的高价值用户",
+            "潜力新客（首单待复购）",
+            "一般活跃未购用户",
+            "低频/沉睡用户",
+        })
+        # 零购买用户的 F_score 必须为 1
+        zero_f = rfm.loc[rfm["buy_count"] == 0, "F_score"].unique().tolist()
+        self.assertEqual(zero_f, [1])
+        self.assertTrue((rfm["days_since_last_active"] >= 0).all())
+
+
+class TestDualFunnelsAndSafety(unittest.TestCase):
+    def test_coverage_vs_sequential_funnel_distinction(self):
+        """目标三：验证覆盖口径与时序口径的严格差异（反序行为不得计入时序转化）。"""
+        df = pd.DataFrame([
+            # 用户 1：严格时序 pv(10:00) -> cart(10:05) -> buy(10:10)
+            (1, "pv", pd.Timestamp("2017-12-01 10:00:00")),
+            (1, "cart", pd.Timestamp("2017-12-01 10:05:00")),
+            (1, "buy", pd.Timestamp("2017-12-01 10:10:00")),
+            # 用户 2：先 buy(09:00) 后 pv(10:00)，无意向，时序不应计入 intent/buy
+            (2, "buy", pd.Timestamp("2017-12-01 09:00:00")),
+            (2, "pv", pd.Timestamp("2017-12-01 10:00:00")),
+            # 用户 3：先 fav(09:00) 后 pv(10:00)，时序不应计入 pv_to_intent
+            (3, "fav", pd.Timestamp("2017-12-01 09:00:00")),
+            (3, "pv", pd.Timestamp("2017-12-01 10:00:00")),
+        ], columns=["user_id", "behavior_type", "datetime"])
+
+        cov = rfm_mod.compute_coverage_funnel(df).set_index("stage")
+        seq = rfm_mod.compute_sequential_funnel(df).set_index("step")
+
+        # 覆盖口径：3 人 pv, 1 人 cart, 1 人 fav, 2 人 cart_or_fav, 2 人 buy
+        self.assertEqual(int(cov.loc["pv", "users"]), 3)
+        self.assertEqual(int(cov.loc["cart_or_fav", "users"]), 2)
+        self.assertEqual(int(cov.loc["buy", "users"]), 2)
+
+        # 时序口径：3 人 pv -> 1 人 pv_to_intent -> 1 人 intent_to_buy
+        self.assertEqual(int(seq.loc["pv", "users"]), 3)
+        self.assertEqual(int(seq.loc["pv_to_intent(cart|fav)", "users"]), 1)
+        self.assertEqual(int(seq.loc["intent_to_buy", "users"]), 1)
+        self.assertAlmostEqual(float(cov.loc["buy", "user_coverage_vs_pv"]), 2 / 3, places=4)
+        self.assertAlmostEqual(float(seq.loc["intent_to_buy", "overall_conv_from_pv"]), 1 / 3, places=4)
+
+    def test_zero_division_no_nan_no_inf(self):
+        """边界测试：空表与非空无 pv 数据下，两种漏斗均不产生 NaN、inf 或 ZeroDivisionError。"""
+        empty_df = pd.DataFrame(columns=["user_id", "behavior_type", "datetime"])
+        no_pv_df = pd.DataFrame([
+            (1, "buy", pd.Timestamp("2017-12-01 10:00:00")),
+            (2, "cart", pd.Timestamp("2017-12-01 11:00:00")),
+        ], columns=["user_id", "behavior_type", "datetime"])
+        for sample in (empty_df, no_pv_df):
+            for fn in (rfm_mod.compute_coverage_funnel, rfm_mod.compute_sequential_funnel):
+                res = fn(sample)
+                num_cols = res.select_dtypes(include=[np.number]).columns
+                self.assertFalse(res[num_cols].isna().any().any())
+                self.assertFalse(np.isinf(res[num_cols]).any().any())
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)
