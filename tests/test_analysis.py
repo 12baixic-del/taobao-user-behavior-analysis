@@ -183,6 +183,18 @@ class TestRFMBusinessSegments(unittest.TestCase):
         self.assertEqual(zero_f, [1])
         self.assertTrue((rfm["days_since_last_active"] >= 0).all())
 
+    def test_score_recency_days_bins(self):
+        """验证 R 业务分箱全区间打分：0-1天=5, 2-3天=4, 4-5天=3, 6-7天=2, >=8天=1。"""
+        days = pd.Series([0, 1, 2, 3, 4, 5, 6, 7, 8])
+        scores = rfm_mod.score_recency_days(days)
+        self.assertEqual(scores.tolist(), [5, 5, 4, 4, 3, 3, 2, 2, 1])
+
+    def test_score_frequency_buys_bins(self):
+        """验证 F 业务分箱阈值打分：0次=1, 1次=2, 2次=3, 3-4次=4, >=5次=5。"""
+        buys = pd.Series([0, 1, 2, 3, 4, 5])
+        scores = rfm_mod.score_frequency_buys(buys)
+        self.assertEqual(scores.tolist(), [1, 2, 3, 4, 4, 5])
+
 
 class TestDualFunnelsAndSafety(unittest.TestCase):
     def test_coverage_vs_sequential_funnel_distinction(self):
