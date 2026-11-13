@@ -5,9 +5,8 @@
     pip install -r requirements.txt
     streamlit run app.py
 
-所有业务数字均在运行时从 outputs/*.csv 读取，代码中不硬编码任何业务数字。
-样本口径：10,053 名用户的整群抽样（总体 987,994 用户的 1.02%），
-时间窗口为北京时间 2017-11-25 至 2017-12-03（双 12 预热期 9 天）。
+所有业务数字均在运行时从 outputs/*.csv 读取（数据集口径见
+outputs/dataset_summary.csv），展示文本中不硬编码业务数字。
 """
 from pathlib import Path
 
@@ -22,21 +21,6 @@ st.set_page_config(
 )
 
 st.title("淘宝用户行为分析 · 可交互看板")
-
-st.markdown(
-    """
-**数据来源**：阿里云天池 UserBehavior 数据集（649），与 Kaggle 公开镜像
-同源验证通过（100,150,807 行，987,994 用户）。
-**样本**：按 `user_id` 哈希做用户级整群抽样，保留 10,053 名用户的
-1,009,774 条完整行为记录（总体 987,994 用户的 1.02%）。
-**窗口**：北京时间 2017-11-25 至 2017-12-03（双 12 预热期 9 天）。
-
-**局限声明**：原始数据无金额字段，只做最近活跃（R）与行为频次（F）分析，
-不涉及金额维度与 GMV；R+F 分层无 M；9 天窗口仅反映双 12 预热期；
-R 维度在 9 天窗口内已退化（99.86% 的用户 R=5），分层实际是单维 F；
-比例类指标可推广，规模类数字不得直接等同总体规模。
-"""
-)
 
 
 @st.cache_data
@@ -53,6 +37,7 @@ def load_summaries():
         "nonpath_split": pd.read_csv(OUTPUTS / "funnel_nonpath_split.csv"),
         "nonpath_totals": pd.read_csv(OUTPUTS / "funnel_nonpath_totals.csv"),
         "cross_item": pd.read_csv(OUTPUTS / "funnel_cross_item.csv"),
+        "dataset": pd.read_csv(OUTPUTS / "dataset_summary.csv"),
     }
 
 
@@ -66,6 +51,24 @@ top_categories = data["top_categories"]
 nonpath_split = data["nonpath_split"]
 nonpath_totals = data["nonpath_totals"]
 cross_item = data["cross_item"]
+# 数据集口径（全部从 outputs/dataset_summary.csv 运行时读取，不硬编码）。
+ds = {row["metric"]: row["value"] for _, row in data["dataset"].iterrows()}
+_window_days = (
+    pd.to_datetime(ds["window_end"]) - pd.to_datetime(ds["window_start"])
+).days + 1
+
+st.markdown(
+    f"**数据来源**：阿里云天池 UserBehavior 数据集（649），与 Kaggle 公开镜像"
+    f"同源验证通过（{int(ds['full_rows']):,} 行，{int(ds['full_users']):,} 用户）。"
+    f"**样本**：按 `user_id` 哈希做用户级整群抽样，保留 {int(ds['sample_users']):,} 名用户的"
+    f"{int(ds['sample_rows']):,} 条完整行为记录（总体 {int(ds['full_users']):,} 用户的"
+    f"{float(ds['sample_share']):.2%}）。"
+    f"**窗口**：北京时间 {ds['window_start']} 至 {ds['window_end']}（双 12 预热期 {_window_days} 天）。"
+    "\n\n**局限声明**：原始数据无金额字段，只做最近活跃（R）与行为频次（F）分析，"
+    "不涉及金额维度与 GMV；R+F 分层无 M；9 天窗口仅反映双 12 预热期；"
+    f"R 维度在 9 天窗口内已退化（{float(ds['r5_share']):.2%} 的用户 R=5），分层实际是单维 F；"
+    "比例类指标可推广，规模类数字不得直接等同总体规模。"
+)
 
 # ---- 顶部关键指标（全部从 CSV 运行时计算，无硬编码业务数字） -----------
 buy_cov = float(
@@ -161,6 +164,7 @@ _cross = cross_item.set_index("group_name")["users"]
 _bought_intended = int(_cross.loc["bought_intended_item"])
 _bought_only_unintended = int(_cross.loc["bought_only_unintended"])
 _path_buyers = _bought_intended + _bought_only_unintended
+_same_second = int(cross_item["same_second_pairs"].iloc[0])
 _pv_behaviors = int(funnel.loc[funnel["stage"] == "pv", "behaviors"].iloc[0])
 _buy_behaviors = int(funnel.loc[funnel["stage"] == "buy", "behaviors"].iloc[0])
 _event_ratio = _buy_behaviors / _pv_behaviors
@@ -168,11 +172,12 @@ st.markdown(
     "漏斗口径：当前漏斗是用户级、跨商品的行为顺序（同一用户在不同商品上的"
     "浏览/意向/购买按时间排序），不等于真实商品交易路径："
     f"完整路径购买用户共 {_path_buyers:,} 人，其中 {_bought_intended:,} 人"
-    f"（{_bought_intended / _path_buyers:.1%}）至少购买过一件意向商品，"
-    f"{_bought_only_unintended:,} 人购买的全部是未意向过的商品。"
+    f"（{_bought_intended / _path_buyers:.1%}）至少购买过一件先前意向商品，"
+    f"{_bought_only_unintended:,} 人所购商品在购买前均无同商品加购/收藏记录。"
     "商品级核对（与用户级路径不同）：同一商品的加购/收藏须严格早于对该商品"
-    "的购买，才算“购买过先前意向商品”（同秒不计入；真实样本中同秒配对为 0）。"
-    "用户级完整时序路径只要求行为顺序，不要求同一商品。"
+    f"的购买，才算“购买过先前意向商品”（同秒不计入；真实样本中同秒配对为 {_same_second} 对）。"
+    "商品级核对使用窗口内全部加购/收藏与购买事件（意向可在首次浏览之前）；"
+    "用户级完整时序路径仍要求 pv → 意向 → 购买顺序，两者是不同口径，不得混用。"
 )
 st.markdown(
     "三率区分：事件次数比（购买次数 / 浏览次数，全样本 "
@@ -240,7 +245,7 @@ st.markdown(
     f"业务解读：9 天内购买 ≥2 次的用户占 **{float(top_seg['user_share']):.1%}**"
     f"（{int(top_seg['users']):,} 人），购买 0 次共 {_zero_n:,} 人"
     f"（{_zero_n / _total_users:.1%}）；"
-    "“流失风险的高价值用户”为 0 人；R 维度在 9 天窗口内已退化，"
+    f"“流失风险的高价值用户”为 {int(ds['risk_users'])} 人；R 维度在 9 天窗口内已退化，"
     "分层实际是单维 F，不得把“重要价值用户”写成高价值客户占比。"
 )
 

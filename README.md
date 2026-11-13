@@ -7,7 +7,7 @@
 
 > [!IMPORTANT]
 > **版本与数据状态声明（v2）**
-> - 本分支（v2）已完成流式清洗抽样、UTC+8 时区修正、R+F 分层、覆盖/时序双漏斗及 32 项自动化测试的工程重构。
+> - 本分支（v2）已完成流式清洗抽样、UTC+8 时区修正、R+F 分层、覆盖/时序双漏斗及 37 项自动化测试的工程重构。
 > - **真实数据复算已完成（2026-11-13）**：100,150,807 行全量扫描，业务结论见 REPORT.md §3。
 > - 仓库早期 v1 版本的输出（含 `527,696` 人、`3.99%` 转化率与旧 RFM 结果）存在按行抽样与口径偏差，已完整归档至 [`docs/legacy/REPORT_v1.md`](docs/legacy/REPORT_v1.md) 与 [`outputs/legacy_v1/`](outputs/legacy_v1/README.md) 仅作历史追溯，**不作为 v2 新版分析结论**。
 
@@ -41,7 +41,7 @@
 | 数据处理 | `Python 3.13` / `pandas>=2.0` / `numpy>=1.24` | 单遍分块流式读取、向量化哈希抽样、分组聚合 |
 | 可视化 | `matplotlib>=3.6` / `seaborn>=0.13` | 趋势图、漏斗图、留存率与 RFM 分层柱状图（`Agg` 无头渲染） |
 | 性能与内存度量 | `psutil>=5.9` | 独立子进程测量 `peak_wset`（峰值工作集）与内存增量 |
-| 质量保障与 CI | `unittest` / `GitHub Actions` | 32 项单元测试/边界测试/回归测试与自动 CI 门禁 |
+| 质量保障与 CI | `unittest` / `GitHub Actions` | 37 项单元测试/边界测试/回归测试与自动 CI 门禁 |
 
 ---
 
@@ -68,7 +68,8 @@ taobao-user-behavior-analysis/
 ├── tests/
 │   ├── test_analysis.py            # 17 项单元/边界/回归测试（含跨 chunk 完整度与脏行容错）
 │   ├── test_sql_funnel.py          # 4 项 SQL 实测（Q3/Q9/Q9b 同秒/反序/跨商品时序规则）
-│   └── test_cross_item.py          # 11 项第三轮测试（P0 分母回归、P1 商品级时间逻辑 7 场景、已提交小表一致性）
+│   ├── test_cross_item.py          # 14 项第三轮测试（P0 分母回归、P1 商品级时间逻辑 7 场景、已提交小表一致性、范围回归、同秒诊断、非路径用户不计入）
+│   └── test_dashboard.py           # 2 项看板渲染测试（AppTest 直接断言显示的 22.1% / 51.5% 与数据集口径）
 ├── .gitignore                      # 排除原始 CSV、抽样大表、缓存、虚拟环境与密钥
 ├── REPORT.md                       # v2 分析框架、口径说明与历史对比报告
 ├── README.md                       # 项目工程文档
@@ -158,9 +159,10 @@ flowchart LR
 
 ## 8. 自动化测试
 
-[`tests/`](tests/) 共 **32 项自动化测试**（`test_analysis.py` 17 项 +
+[`tests/`](tests/) 共 **37 项自动化测试**（`test_analysis.py` 17 项 +
 [`test_sql_funnel.py`](tests/test_sql_funnel.py) 4 项 +
-[`test_cross_item.py`](tests/test_cross_item.py) 11 项），覆盖：
+[`test_cross_item.py`](tests/test_cross_item.py) 14 项 +
+[`test_dashboard.py`](tests/test_dashboard.py) 2 项），覆盖：
 - UTC → 北京时间（`UTC+8`）秒级上下边界过滤
 - 跨分块去重与自适应阈值收紧下的 `user_id` 完整序列保留（`len(sampled) < 400` 且全序列无截断）
 - 脏行容错（缺失 `user_id`、非法字符串时间戳）与单一大户极端倾斜保护（不崩溃、不删空）
@@ -175,7 +177,10 @@ flowchart LR
   意向与多次购买的两种子情形、同秒、无意向直接购买、分类加总守恒）、已提交
   小表内部一致性（分母总体、份额重算、跨商品加总 = 5,336 人）。
   注意：商品级核对用严格早于（`<`，同秒不计入），与用户级时序路径的 `>=`
-  规则不同，两者不得混用。
+  规则不同，两者不得混用；商品级核对使用窗口内全部事件（意向可在首次浏览
+  之前），另有范围回归、同秒诊断精确配对计数、非路径购买用户不计入三项补充测试。
+- 看板渲染：`test_dashboard.py` 用 Streamlit AppTest 直接渲染 `app.py`，
+  断言显示的 22.1% / 51.5% 与数据集口径，守护看板自身的分母与口径。
 
 ```bash
 python -m unittest discover -s tests -v
@@ -191,7 +196,7 @@ git clone https://github.com/12baixic-del/taobao-user-behavior-analysis.git
 cd taobao-user-behavior-analysis
 pip install -r requirements.txt
 
-# 1. 运行 32 项自动化测试
+# 1. 运行 37 项自动化测试
 python -m unittest discover -s tests -v
 
 # 2. 复现合成数据性能基准（可选，将生成并清理临时 10万/100万/1000万行 CSV）

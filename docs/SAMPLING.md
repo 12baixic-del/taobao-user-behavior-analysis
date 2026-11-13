@@ -42,7 +42,7 @@ python notebooks/01_data_cleaning_eda.py
 
 ```bash
 python notebooks/02_funnel_rfm_analysis.py   # 生成 funnel / sequential / retention / rfm 汇总
-python scripts/gen_dashboard_csvs.py          # 生成 top_categories / nonpath_split / nonpath_totals / cross_item
+python scripts/gen_dashboard_csvs.py          # 生成 top_categories / nonpath_split / nonpath_totals / cross_item / dataset_summary
 ```
 
 ## 4. SQL 11 条查询复现
@@ -73,15 +73,18 @@ python sql/run_sqlite.py
 购买覆盖率 68.1%（6,811/10,008）。时序口径（Q3）不受本次修正影响：
 pv → 意向 8,583（85.8%）→ 购买 5,336（意向→购买 62.2%，
 用户级时序路径完成率 53.3%）；1,510 名购买用户未满足完整路径
-（767 人无意向记录，743 人顺序不满足）；商品级跨商品核对 2,715 / 2,621 人
-（同一商品意向须严格早于购买；旧集合交集规则多算 82 人）。非路径购买占比
+（767 人无意向记录，743 人顺序不满足）；商品级跨商品核对 2,747 / 2,589 人
+（同一商品意向须严格早于购买，使用窗口内全部事件，意向可在首次浏览之前；
+旧集合交集规则给出 2,797 人，时间规则在过滤集上先剔除 82 人得 2,715 人，
+放宽事件范围又加回 32 人，净变化 -50 人）。非路径购买占比
 的分母是全部购买用户：1,510 / 6,846 = 22.1%（另有 PV 口径 1,475 / 6,811 = 21.7%
-供参考），见 `outputs/funnel_nonpath_totals.csv`。
+供参考），见 `outputs/funnel_nonpath_totals.csv`。同秒诊断按精确时间戳配对
+计数（同一用户、同一商品、同一秒既有意向又有购买），真实样本为 0 对。
 
 ## 5. 自动化测试
 
 ```bash
-python -m unittest discover -s tests -v   # 32 项：test_analysis.py 17 项 + test_sql_funnel.py 4 项 + test_cross_item.py 11 项
+python -m unittest discover -s tests -v   # 37 项：test_analysis.py 17 项 + test_sql_funnel.py 4 项 + test_cross_item.py 14 项 + test_dashboard.py 2 项
 ```
 
 新增的 Q2 口径测试（`test_q2_coverage_restricted_to_pv_users` 与
@@ -90,8 +93,12 @@ python -m unittest discover -s tests -v   # 32 项：test_analysis.py 17 项 + t
 无浏览用户不计入覆盖人数，但其事件仍计入 `behaviors`；
 Q9b 的同秒、反序、无浏览、跨商品四类边界测试保留，全部通过。
 
-新增的第三轮测试（`tests/test_cross_item.py`，11 项）用合成小数据验证：
+新增的第三轮测试（`tests/test_cross_item.py`，14 项）用合成小数据验证：
 P1 的 7 类场景（先意向后购买、先购买后收藏、多商品、同一商品多次意向与
 多次购买的两种子情形、同秒、无意向直接购买、分类加总守恒）与 P0 的分母
 回归（合成数据上旧错误算法给 3/3 = 100%，正确值 3/4 = 75%），以及已提交
-小表内部一致性（分母总体、份额重算、跨商品加总 = 5,336 人）。
+小表内部一致性（分母总体、份额重算、跨商品加总 = 5,336 人）；另有意向在
+首次浏览之前的范围回归、同秒诊断精确配对计数、非路径购买用户不计入
+商品级分类三项补充测试。`tests/test_dashboard.py`（2 项）用 Streamlit
+AppTest 直接渲染看板，断言显示的 22.1% / 51.5% 与数据集口径，守护
+app.py 自身的分母与口径（生成器单测覆盖不到看板）。

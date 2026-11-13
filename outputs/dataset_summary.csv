@@ -1,0 +1,10 @@
+metric,value,source
+full_rows,100150807,data/raw/DATA_VERIFICATION.md
+full_users,987994,data/raw/DATA_VERIFICATION.md
+sample_users,10053,computed from sample
+sample_rows,1009774,computed from sample
+sample_share,0.010175,sample_users / full_users
+window_start,2017-11-25,computed from sample
+window_end,2017-12-03,computed from sample
+r5_share,0.998607,"notebooks/02 R bins, observe 2017-12-03"
+risk_users,0,notebooks/02 risk rule: buys>=2 and R<=3

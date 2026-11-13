@@ -113,6 +113,55 @@ class TestCrossItemTimeLogic(unittest.TestCase):
         self.assertEqual(groups["bought_intended_item"], 0)
         self.assertEqual(groups["bought_only_unintended"], 1)
 
+    def test_pre_pv_intent_counts(self):
+        """意向在首次浏览之前、购买在后 -> 算购买过先前意向商品。
+
+        覆盖 Codex 审查发现的事件范围问题：商品级核对使用窗口内全部事件，
+        不得沿用用户级路径的“意向须在首次浏览之后”过滤（真实样本中因此
+        漏算 32 人，如先加购、后浏览、再购买的用户）。
+        """
+        df = events([
+            ("U9", "A", "cart", "2017-11-25 16:37"),
+            ("U9", "A", "pv", "2017-11-25 17:41"),
+            ("U9", "B", "cart", "2017-11-25 21:48"),
+            ("U9", "A", "buy", "2017-12-01 11:50"),
+        ])
+        _, _, sub, sub2, seq_buyers = gen.compute_nonpath(df)
+        self.assertIn("U9", seq_buyers)
+        intent_all = df[df.behavior_type.isin(["cart", "fav"])]
+        buy_all = df[df.behavior_type == "buy"]
+        groups, _ = gen.classify_cross_item(intent_all, buy_all, seq_buyers)
+        by_group = dict(zip(groups["group_name"], groups["users"]))
+        self.assertEqual(by_group["bought_intended_item"], 1)
+        # 旧的路径过滤集会丢掉 16:37 那条意向 -> 误判为只买过未意向商品。
+        groups_f, _ = gen.classify_cross_item(sub, sub2, seq_buyers)
+        by_group_f = dict(zip(groups_f["group_name"], groups_f["users"]))
+        self.assertEqual(by_group_f["bought_only_unintended"], 1)
+
+    def test_non_seq_buyer_not_counted(self):
+        """不在完整路径购买用户集合中的用户，即使有意向在前的购买也不计入。"""
+        groups, _ = classify(
+            [("U8", "A", "cart", "2017-12-01 10:05")],
+            [("U8", "A", "buy", "2017-12-01 10:10")],
+            ["U9"])
+        self.assertEqual(groups["bought_intended_item"], 0)
+        self.assertEqual(groups["bought_only_unintended"], 1)
+
+    def test_same_second_diagnostic_counts_exact_matches(self):
+        """同秒诊断按精确时间戳配对计数，而非仅比较极值。
+
+        意向 10:00 与 10:10、购买 10:10：存在一对同秒记录（10:10），
+        但 min(意向)=10:00 < max(购买)=10:10，仍算意向在前。
+        """
+        groups, diag = classify(
+            [("U10", "A", "cart", "2017-12-01 10:00"),
+             ("U10", "A", "cart", "2017-12-01 10:10")],
+            [("U10", "A", "buy", "2017-12-01 10:10")],
+            ["U10"])
+        self.assertEqual(groups["bought_intended_item"], 1)
+        self.assertEqual(diag["same_second_pairs"], 1)
+        self.assertEqual(diag["users_flipping_under_loose"], 0)
+
     def test_classification_conservation(self):
         """分类人数加总一致性：互斥、无重复、总人数守恒。
 
@@ -147,7 +196,7 @@ class TestCrossItemTimeLogic(unittest.TestCase):
         self.assertEqual(groups["bought_only_unintended"], 5)
         self.assertEqual(groups["bought_intended_item"]
                          + groups["bought_only_unintended"], len(seq))
-        self.assertEqual(diag["old_same"], 6)
+        self.assertEqual(diag["overlap_all_events"], 6)
         self.assertEqual(diag["same_second_pairs"], 1)
         self.assertEqual(diag["users_flipping_under_loose"], 1)
 
@@ -187,12 +236,14 @@ class TestNonpathShareDenominator(unittest.TestCase):
         self.assertNotAlmostEqual(totals["nonpath_share_all"], buggy)
 
     def test_nonpath_population_conservation(self):
-        """总体守恒：有 PV + 无 PV = 全部；非路径有 PV + 无 PV = 非路径总数。"""
-        split, totals, _, _, _ = gen.compute_nonpath(self.df)
-        self.assertEqual(totals["pv_buy_users"]
-                         + (totals["total_buy_users"]
-                            - totals["pv_buy_users"]),
-                         totals["total_buy_users"])
+        """总体守恒：全部购买用户 = 完整路径购买用户 + 非路径购买用户；
+        有 PV 购买用户 = 完整路径购买用户 + 非路径有 PV 购买用户；
+        非路径有 PV + 非路径无 PV = 非路径总数。"""
+        split, totals, _, _, seq_buyers = gen.compute_nonpath(self.df)
+        self.assertEqual(totals["total_buy_users"],
+                         len(seq_buyers) + totals["nonpath_total"])
+        self.assertEqual(totals["pv_buy_users"],
+                         len(seq_buyers) + totals["nonpath_pv_users"])
         self.assertEqual(totals["nonpath_pv_users"]
                          + totals["nonpath_no_pv_users"],
                          totals["nonpath_total"])

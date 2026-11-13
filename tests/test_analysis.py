@@ -1,8 +1,13 @@
 import importlib.util
+import os
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+
+# Matplotlib needs a writable config dir at import time; CI/review sandboxes
+# may not provide one via HOME. Point it at a temp dir first.
+os.environ.setdefault("MPLCONFIGDIR", tempfile.mkdtemp(prefix="mplconfig-"))
 
 import numpy as np
 import pandas as pd

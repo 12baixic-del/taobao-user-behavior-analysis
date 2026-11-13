@@ -1,3 +1,3 @@
-group_name,users,definition
-bought_intended_item,2715,完整路径购买用户中，至少一件购买商品在购买前有同商品加购/收藏记录（意向须严格早于购买，同秒不计入）
-bought_only_unintended,2621,完整路径购买用户中，没有任何一件购买商品在购买前有同商品加购/收藏记录
+group_name,users,definition,same_second_pairs,users_flipping_under_loose
+bought_intended_item,2747,完整路径购买用户中，至少一件购买商品在购买前有同商品加购/收藏记录（意向须严格早于购买，同秒不计入；意向可在首次浏览之前）,0,0
+bought_only_unintended,2589,完整路径购买用户中，所购商品在购买前均无同商品加购/收藏记录（购买后才意向的商品不计入）,0,0
