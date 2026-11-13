@@ -297,7 +297,7 @@ def main() -> None:
     if not retention.empty:
         print(f"平均次日留存率：{retention['retention_rate'].mean():.2%}")
 
-    observe_date = df["datetime"].dt.date.max()
+    observe_date = OBSERVE_DATE  # 锁定为常量，防止样本最大日期变化导致 R 静默漂移
     rfm, seg_summary = compute_rfm(df, observe_date=observe_date)
     rfm.to_csv(OUT_DIR / "rfm_users.csv", index=False)
     seg_summary.to_csv(OUT_DIR / "rfm_summary.csv", index=False)
