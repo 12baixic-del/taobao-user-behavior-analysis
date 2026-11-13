@@ -19,6 +19,9 @@ Synthetic users (all on 2017-12-01):
   U6: cart 09:00 -> buy 09:30 (no pv at all)
       [no-pv buyer -> non-path]
 
+Expected Q2 (coverage, denominator = pv users only; 2026-11-14 fix):
+  pv=5, cart=3 (0.6), fav=1 (0.2), cart_or_fav=4 (0.8), buy=5 (1.0).
+  behaviors stay full-sample event counts: cart=4, buy=6 (U6's events kept).
 Expected Q3: pv=5, pv_to_intent=3, intent_to_buy=2.
 Expected Q9: strict_seq (3, 2, 0.6667); any_intent (5, 5, 1.0).
 Expected Q9b: no_intent_buyers=1 (U5), wrong_order_buyers=3 (U3, U4, U6).
@@ -95,6 +98,17 @@ class TestSqlSequentialFunnel(unittest.TestCase):
     @classmethod
     def tearDownClass(cls):
         cls.conn.close()
+
+    def test_q2_coverage_restricted_to_pv_users(self):
+        rows = self.conn.execute(
+            QUERIES["Q2：覆盖漏斗各环节人数与转化率（口径 A）"]).fetchall()
+        got = {r[0]: (r[1], r[2], r[3]) for r in rows}
+        # users：U6（无 pv）不计入；behaviors：全样本事件次数，U6 的事件仍计入。
+        self.assertEqual(got["pv"], (5, 5, 1.0))
+        self.assertEqual(got["cart"], (3, 4, 0.6))
+        self.assertEqual(got["fav"], (1, 1, 0.2))
+        self.assertEqual(got["cart_or_fav"], (4, 5, 0.8))
+        self.assertEqual(got["buy"], (5, 6, 1.0))
 
     def test_q3_same_second_reverse_order_and_cross_item(self):
         rows = self.conn.execute(QUERIES["Q3：时序漏斗 pv → 意向 → 购买（口径 B）"]).fetchall()

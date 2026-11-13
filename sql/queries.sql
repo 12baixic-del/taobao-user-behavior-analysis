@@ -25,28 +25,48 @@ ORDER BY date;
 -- Q2：覆盖漏斗各环节人数与转化率（口径 A）
 -- 业务问题：各功能触点（浏览/加购/收藏/购买）分别覆盖了多少用户？
 -- 口径：独立用户数，不要求行为先后顺序；cart 与 fav 并列展示，不设串联关系。
+-- 口径规则（2026-11-14 复审整改）：users 与 user_coverage_vs_pv 只统计
+--   浏览用户集合（发生过 pv 的用户）——分子分母同一集合；45 名无浏览记录
+--   的用户（其中 35 人购买、42 人加购、24 人收藏）不计入覆盖人数。
+--   behaviors 列仍为全样本事件次数（与 Q6/Q7 的事件转化率一致）。
 WITH pv_users AS (
-    SELECT COUNT(DISTINCT user_id) AS n FROM sample WHERE behavior_type = 'pv'
+    SELECT DISTINCT user_id FROM sample WHERE behavior_type = 'pv'
+),
+pv_n AS (
+    SELECT COUNT(*) AS n FROM pv_users
+),
+-- users：仅计浏览用户集合内的独立用户（分子分母同一集合）
+u AS (
+    SELECT 'pv' AS stage, COUNT(DISTINCT s.user_id) AS users
+    FROM sample s JOIN pv_users p ON s.user_id = p.user_id WHERE s.behavior_type = 'pv'
+    UNION ALL
+    SELECT 'cart', COUNT(DISTINCT s.user_id)
+    FROM sample s JOIN pv_users p ON s.user_id = p.user_id WHERE s.behavior_type = 'cart'
+    UNION ALL
+    SELECT 'fav', COUNT(DISTINCT s.user_id)
+    FROM sample s JOIN pv_users p ON s.user_id = p.user_id WHERE s.behavior_type = 'fav'
+    UNION ALL
+    SELECT 'cart_or_fav', COUNT(DISTINCT s.user_id)
+    FROM sample s JOIN pv_users p ON s.user_id = p.user_id WHERE s.behavior_type IN ('cart', 'fav')
+    UNION ALL
+    SELECT 'buy', COUNT(DISTINCT s.user_id)
+    FROM sample s JOIN pv_users p ON s.user_id = p.user_id WHERE s.behavior_type = 'buy'
+),
+-- behaviors：全样本事件次数（与 Q6/Q7 的事件转化率一致，不按用户过滤）
+b AS (
+    SELECT 'pv' AS stage, COUNT(*) AS behaviors FROM sample WHERE behavior_type = 'pv'
+    UNION ALL
+    SELECT 'cart', COUNT(*) FROM sample WHERE behavior_type = 'cart'
+    UNION ALL
+    SELECT 'fav', COUNT(*) FROM sample WHERE behavior_type = 'fav'
+    UNION ALL
+    SELECT 'cart_or_fav', COUNT(*) FROM sample WHERE behavior_type IN ('cart', 'fav')
+    UNION ALL
+    SELECT 'buy', COUNT(*) FROM sample WHERE behavior_type = 'buy'
 )
-SELECT 'pv' AS stage, COUNT(DISTINCT user_id) AS users, COUNT(*) AS behaviors,
-       ROUND(1.0 * COUNT(DISTINCT user_id) / (SELECT n FROM pv_users), 4) AS user_coverage_vs_pv
-FROM sample WHERE behavior_type = 'pv'
-UNION ALL
-SELECT 'cart', COUNT(DISTINCT user_id), COUNT(*),
-       ROUND(1.0 * COUNT(DISTINCT user_id) / (SELECT n FROM pv_users), 4)
-FROM sample WHERE behavior_type = 'cart'
-UNION ALL
-SELECT 'fav', COUNT(DISTINCT user_id), COUNT(*),
-       ROUND(1.0 * COUNT(DISTINCT user_id) / (SELECT n FROM pv_users), 4)
-FROM sample WHERE behavior_type = 'fav'
-UNION ALL
-SELECT 'cart_or_fav', COUNT(DISTINCT user_id), COUNT(*),
-       ROUND(1.0 * COUNT(DISTINCT user_id) / (SELECT n FROM pv_users), 4)
-FROM sample WHERE behavior_type IN ('cart', 'fav')
-UNION ALL
-SELECT 'buy', COUNT(DISTINCT user_id), COUNT(*),
-       ROUND(1.0 * COUNT(DISTINCT user_id) / (SELECT n FROM pv_users), 4)
-FROM sample WHERE behavior_type = 'buy';
+SELECT u.stage, u.users, b.behaviors,
+       ROUND(1.0 * u.users / (SELECT n FROM pv_n), 4) AS user_coverage_vs_pv
+FROM u JOIN b ON u.stage = b.stage;
 
 -- Q3：时序漏斗 pv → 意向 → 购买（口径 B）
 -- 业务问题：沿“浏览 → 产生意向 → 最终下单”主路径，转化效率如何？

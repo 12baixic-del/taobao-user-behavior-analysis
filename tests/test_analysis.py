@@ -227,6 +227,51 @@ class TestDualFunnelsAndSafety(unittest.TestCase):
         self.assertAlmostEqual(float(cov.loc["buy", "user_coverage_vs_pv"]), 2 / 3, places=4)
         self.assertAlmostEqual(float(seq.loc["intent_to_buy", "overall_conv_from_pv"]), 1 / 3, places=4)
 
+    def test_coverage_funnel_excludes_non_pv_users(self):
+        """2026-11-14 复审整改：覆盖口径的 users 与 user_coverage_vs_pv 只统计
+        浏览用户集合；无浏览记录的用户（即使有加购/购买）不计入覆盖人数。
+        behaviors 列仍为全样本事件次数（与 Q6/Q7 的事件转化率一致）。
+
+        合成 6 人与 tests/test_sql_funnel.py 的 SQL 用例逐人对应：
+        U1/U2: pv+cart+buy；U3: buy→pv→cart；U4: fav→pv→buy；
+        U5: pv+buy（无意向）；U6: cart+buy（无 pv）。
+        真实样本对照：45 名无浏览用户（35 人购买、42 人加购、24 人收藏）
+        被排除后，购买覆盖率由 68.4%（6,846/10,008）修正为 68.1%
+        （6,811/10,008）。
+        """
+        df = pd.DataFrame([
+            (1, "pv", pd.Timestamp("2017-12-01 10:00:00")),
+            (1, "cart", pd.Timestamp("2017-12-01 10:05:00")),
+            (1, "buy", pd.Timestamp("2017-12-01 10:10:00")),
+            (2, "pv", pd.Timestamp("2017-12-01 10:00:00")),
+            (2, "cart", pd.Timestamp("2017-12-01 10:00:00")),
+            (2, "buy", pd.Timestamp("2017-12-01 10:00:00")),
+            (3, "buy", pd.Timestamp("2017-12-01 09:00:00")),
+            (3, "pv", pd.Timestamp("2017-12-01 10:00:00")),
+            (3, "cart", pd.Timestamp("2017-12-01 11:00:00")),
+            (4, "fav", pd.Timestamp("2017-12-01 09:00:00")),
+            (4, "pv", pd.Timestamp("2017-12-01 10:00:00")),
+            (4, "buy", pd.Timestamp("2017-12-01 11:00:00")),
+            (5, "pv", pd.Timestamp("2017-12-01 10:00:00")),
+            (5, "buy", pd.Timestamp("2017-12-01 10:30:00")),
+            (6, "cart", pd.Timestamp("2017-12-01 09:00:00")),
+            (6, "buy", pd.Timestamp("2017-12-01 09:30:00")),
+        ], columns=["user_id", "behavior_type", "datetime"])
+        cov = rfm_mod.compute_coverage_funnel(df).set_index("stage")
+        # users：U6（无 pv）不计入任何一行
+        self.assertEqual(int(cov.loc["pv", "users"]), 5)
+        self.assertEqual(int(cov.loc["cart", "users"]), 3)
+        self.assertEqual(int(cov.loc["fav", "users"]), 1)
+        self.assertEqual(int(cov.loc["cart_or_fav", "users"]), 4)
+        self.assertEqual(int(cov.loc["buy", "users"]), 5)
+        self.assertAlmostEqual(float(cov.loc["cart", "user_coverage_vs_pv"]), 0.6, places=4)
+        self.assertAlmostEqual(float(cov.loc["fav", "user_coverage_vs_pv"]), 0.2, places=4)
+        self.assertAlmostEqual(float(cov.loc["cart_or_fav", "user_coverage_vs_pv"]), 0.8, places=4)
+        self.assertAlmostEqual(float(cov.loc["buy", "user_coverage_vs_pv"]), 1.0, places=4)
+        # behaviors：全样本事件次数，U6 的 cart/buy 事件仍计入
+        self.assertEqual(int(cov.loc["cart", "behaviors"]), 4)
+        self.assertEqual(int(cov.loc["buy", "behaviors"]), 6)
+
     def test_zero_division_no_nan_no_inf(self):
         """边界测试：空表与非空无 pv 数据下，两种漏斗均不产生 NaN、inf 或 ZeroDivisionError。"""
         empty_df = pd.DataFrame(columns=["user_id", "behavior_type", "datetime"])
