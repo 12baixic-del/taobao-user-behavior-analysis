@@ -1,25 +1,18 @@
-"""02 - 漏斗 + 次日留存 + RFM 分层
+"""02 - 漏斗（覆盖口径 vs 时序口径）+ 次日留存 + RFM 业务分箱分层
 
-在 project-data-taobao/ 根目录跑：
+在项目根目录运行：
     python notebooks/02_funnel_rfm_analysis.py
-    得先跑 01，生成 outputs/taobao_clean_sample.csv
+    需先运行 01，生成 outputs/taobao_clean_sample.csv
 
-漏斗先说清楚：按“行为数”和“人数”各算一遍。pv 次数比购买次数大得多，
-一个用户一天能浏览很多次、只买一次，这很正常。
-转化率 = 下一环节 / 上一环节。
-
-留存：次日留存 = 第 D 天活跃的用户里，第 D+1 天又活跃的占比。
-数据只有 9 天，12-03 当天没有次日可算。
-
-RFM：没有价格列，所以没有 M。R = 距上次活跃天数（观察点是样本里最晚那天
-2017-12-03），F = 购买次数。R、F 用百分位排名打 1-5 分，
-不用 qcut，大量并列值会报错。
-
-跑完出这些东西，放 outputs/ 里：
-    funnel_summary.csv    漏斗各环节人数、行为数、转化率
-    retention_summary.csv  每天的次日留存率
-    rfm_users.csv         每个用户的 R / F 值、得分和分层
-    figures/*.png         漏斗图、留存图、RFM 分层图
+核心指标口径说明：
+    1. 漏斗区分两种口径，且严格区分独立用户数 (users) 与行为次数 (behaviors)：
+       - 普通行为覆盖漏斗 (funnel_summary.csv)：统计各行为（含 cart_or_fav 并列意向）的独立覆盖人数与次数。
+       - 时序转化漏斗 (funnel_sequential_summary.csv)：在用户粒度按 datetime 严格校验先后顺序
+         （pv -> pv 后 cart/fav -> intent 后 buy），反映真实路径转化。
+    2. RFM 分层（无价格列故无 M）：
+       - R = 距观察点日期的纯日历天数差（当天活跃为 0，无负数），按业务天数区间打 1-5 分。
+       - F = 购买次数，按业务阈值离散打分（0次=1分, 1次=2分, 2次=3分, 3-4次=4分, >=5次=5分），
+         彻底解决大量零购买用户导致 rank(pct=True) 分数挤压的问题。
 """
 
 import sys
@@ -29,6 +22,7 @@ import matplotlib
 
 matplotlib.use("Agg")  # 不开图形窗口，直接保存图片
 import matplotlib.pyplot as plt
+import numpy as np
 import pandas as pd
 
 BASE = Path(__file__).resolve().parent.parent
@@ -36,7 +30,6 @@ OUT_DIR = BASE / "outputs"
 FIG_DIR = OUT_DIR / "figures"
 SAMPLE_FILE = OUT_DIR / "taobao_clean_sample.csv"
 
-# 观察点：样本中最晚一天（数据集最晚 2017-12-03）
 OBSERVE_DATE = pd.Timestamp("2017-12-03").date()
 
 
@@ -49,59 +42,146 @@ def check_input() -> None:
     sys.exit(2)
 
 
-def score_1_to_5(rank_pct: pd.Series, higher_is_better: bool) -> pd.Series:
-    """百分位排名转 1-5 分。rank_pct 是 0-1 的排名，越高表示值越大。
+def safe_div(numerator: pd.Series | float, denominator: pd.Series | float) -> pd.Series | float:
+    """安全除法：分母为 0 或缺失时统一返回 0.0，避免 ZeroDivisionError / NaN / inf。"""
+    if isinstance(numerator, pd.Series) or isinstance(denominator, pd.Series):
+        idx = numerator.index if isinstance(numerator, pd.Series) else denominator.index
+        num = pd.Series(numerator, index=idx, dtype="float64")
+        den = pd.Series(denominator, index=idx, dtype="float64")
+        valid = (den > 0) & den.notna() & num.notna()
+        return pd.Series(
+            np.where(valid, num / den.where(valid, 1.0), 0.0),
+            index=idx,
+            dtype="float64",
+        )
+    if denominator is None or pd.isna(denominator) or denominator <= 0 or numerator is None or pd.isna(numerator):
+        return 0.0
+    return float(numerator) / float(denominator)
 
-    higher_is_better=True：值越大分越高（如购买次数）。
-    higher_is_better=False：值越小分越高（如距上次活跃天数，越近越好）。
-    """
-    if higher_is_better:
-        return (rank_pct * 5).clip(lower=0, upper=4.999).astype(int) + 1
-    return ((1 - rank_pct) * 5).clip(lower=0, upper=4.999).astype(int) + 1
+
+def compute_days_since_last_active(last_active: pd.Series, observe_date) -> pd.Series:
+    """计算距观察日（纯日历日）的整数天数差，下限截断为 0，避免出现负数。"""
+    obs_day = pd.Timestamp(observe_date).normalize()
+    last_day = pd.to_datetime(last_active).dt.normalize()
+    return (obs_day - last_day).dt.days.clip(lower=0)
 
 
-def main() -> None:
-    check_input()
-    OUT_DIR.mkdir(parents=True, exist_ok=True)
-    FIG_DIR.mkdir(parents=True, exist_ok=True)
+def score_recency_days(days: pd.Series) -> pd.Series:
+    """R 业务分箱（距观察日天数越近分数越高）：0-1天=5, 2-3天=4, 4-5天=3, 6-7天=2, >=8天=1。"""
+    d = pd.to_numeric(days, errors="coerce").fillna(999).clip(lower=0)
+    return pd.Series(
+        np.select(
+            [d <= 1, d <= 3, d <= 5, d <= 7],
+            [5, 4, 3, 2],
+            default=1,
+        ),
+        index=days.index,
+        dtype="int64",
+    )
 
-    df = pd.read_csv(SAMPLE_FILE, parse_dates=["datetime"])
-    df["date"] = pd.to_datetime(df["date"])
-    print(f"读入抽样数据：{len(df):,} 行，{df['user_id'].nunique():,} 人")
-    print(f"时间范围：{df['date'].min().date()} 至 {df['date'].max().date()}")
 
-    # ---------- 转化漏斗 ----------
-    # 人数口径：做过该行为的用户数；行为数口径：该行为的总次数
-    stages = ["pv", "cart", "fav", "buy"]
-    funnel_rows = []
-    for stage in stages:
-        sub = df[df["behavior_type"] == stage]
-        funnel_rows.append({
-            "stage": stage,
-            "users": int(sub["user_id"].nunique()),
+def score_frequency_buys(buy_count: pd.Series) -> pd.Series:
+    """F 业务阈值分箱（显式处理大量零购买用户）：0次=1, 1次=2, 2次=3, 3-4次=4, >=5次=5。"""
+    f = pd.to_numeric(buy_count, errors="coerce").fillna(0).clip(lower=0)
+    return pd.Series(
+        np.select(
+            [f == 0, f == 1, f == 2, f <= 4],
+            [1, 2, 3, 4],
+            default=5,
+        ),
+        index=buy_count.index,
+        dtype="int64",
+    )
+
+
+def compute_coverage_funnel(df: pd.DataFrame) -> pd.DataFrame:
+    """口径 A：普通行为覆盖漏斗（区分独立用户数与行为次数，cart 与 fav 并列展示）。"""
+    stages = [
+        ("pv", ["pv"]),
+        ("cart", ["cart"]),
+        ("fav", ["fav"]),
+        ("cart_or_fav", ["cart", "fav"]),
+        ("buy", ["buy"]),
+    ]
+    rows = []
+    for stage_name, b_list in stages:
+        sub = df[df["behavior_type"].isin(b_list)] if not df.empty else df
+        rows.append({
+            "stage": stage_name,
+            "users": int(sub["user_id"].nunique()) if not sub.empty else 0,
             "behaviors": int(len(sub)),
         })
-    funnel = pd.DataFrame(funnel_rows)
-    funnel["user_rate_vs_pv"] = funnel["users"] / funnel.loc[0, "users"]
-    funnel["behavior_rate_vs_pv"] = funnel["behaviors"] / funnel.loc[0, "behaviors"]
-    # 环节转化率：本环节 / 上一环节（人数口径）
-    funnel["user_conv_from_prev"] = funnel["users"] / funnel["users"].shift(1)
-    funnel.loc[0, "user_conv_from_prev"] = 1.0
-    funnel.to_csv(OUT_DIR / "funnel_summary.csv", index=False)
-    print("\n转化漏斗（人数口径 + 行为数口径）：")
-    print(funnel.round(4))
-    buy_users = int(funnel.loc[funnel["stage"] == "buy", "users"].iloc[0])
-    pv_users = int(funnel.loc[funnel["stage"] == "pv", "users"].iloc[0])
-    print(f"\n整体购买转化率（购买人数 / 浏览人数）：{buy_users / pv_users:.2%}")
-    print("注意：漏斗是按 9 天全时段汇总的，不是单个用户的单次访问路径。")
+    funnel = pd.DataFrame(rows)
+    pv_users = float(funnel.loc[0, "users"])
+    pv_behaviors = float(funnel.loc[0, "behaviors"])
+    funnel["user_coverage_vs_pv"] = safe_div(funnel["users"], pv_users)
+    funnel["behavior_ratio_vs_pv"] = safe_div(funnel["behaviors"], pv_behaviors)
+    return funnel
 
-    # ---------- 次日留存 ----------
-    active_by_day = df.groupby(df["date"].dt.date)["user_id"].apply(set)
+
+def compute_sequential_funnel(df: pd.DataFrame) -> pd.DataFrame:
+    """口径 B：按时间顺序定义的转化漏斗（pv -> pv 后 cart/fav -> intent 后 buy）。"""
+    cols = ["step", "users", "behaviors", "step_conv_from_prev", "overall_conv_from_pv"]
+    if df.empty:
+        return pd.DataFrame([
+            {"step": "pv", "users": 0, "behaviors": 0, "step_conv_from_prev": 0.0, "overall_conv_from_pv": 0.0},
+            {"step": "pv_to_intent(cart|fav)", "users": 0, "behaviors": 0, "step_conv_from_prev": 0.0, "overall_conv_from_pv": 0.0},
+            {"step": "intent_to_buy", "users": 0, "behaviors": 0, "step_conv_from_prev": 0.0, "overall_conv_from_pv": 0.0},
+        ], columns=cols)
+
+    work = df[["user_id", "behavior_type", "datetime"]].copy()
+    work["datetime"] = pd.to_datetime(work["datetime"])
+
+    # Step 1：首次浏览时间
+    pv_df = work[work["behavior_type"] == "pv"]
+    first_pv = pv_df.groupby("user_id")["datetime"].min()
+    u_pv = set(first_pv.index)
+
+    # Step 2：在首次浏览之后（>=）发生加购或收藏的用户与行为
+    intent_df = work[work["behavior_type"].isin(["cart", "fav"]) & work["user_id"].isin(u_pv)].copy()
+    if not intent_df.empty:
+        intent_df["t_pv"] = intent_df["user_id"].map(first_pv)
+        intent_valid = intent_df[intent_df["datetime"] >= intent_df["t_pv"]]
+        first_intent = intent_valid.groupby("user_id")["datetime"].min()
+    else:
+        intent_valid = intent_df
+        first_intent = pd.Series(dtype="datetime64[ns]")
+    u_intent = set(first_intent.index)
+
+    # Step 3：在首次意向之后（>=）发生购买的用户与行为
+    buy_df = work[(work["behavior_type"] == "buy") & work["user_id"].isin(u_intent)].copy()
+    if not buy_df.empty:
+        buy_df["t_intent"] = buy_df["user_id"].map(first_intent)
+        buy_valid = buy_df[buy_df["datetime"] >= buy_df["t_intent"]]
+        u_buy = set(buy_valid["user_id"].unique())
+    else:
+        buy_valid = buy_df
+        u_buy = set()
+
+    counts = [
+        ("pv", len(u_pv), int(len(pv_df))),
+        ("pv_to_intent(cart|fav)", len(u_intent), int(len(intent_valid))),
+        ("intent_to_buy", len(u_buy), int(len(buy_valid))),
+    ]
+    seq_df = pd.DataFrame(counts, columns=["step", "users", "behaviors"])
+    pv_u = float(seq_df.loc[0, "users"])
+    prev_u = seq_df["users"].shift(1).fillna(seq_df["users"])
+    seq_df["step_conv_from_prev"] = safe_div(seq_df["users"], prev_u)
+    seq_df.loc[0, "step_conv_from_prev"] = 1.0 if pv_u > 0 else 0.0
+    seq_df["overall_conv_from_pv"] = safe_div(seq_df["users"], pv_u)
+    return seq_df[cols]
+
+
+def compute_retention(df: pd.DataFrame) -> pd.DataFrame:
+    """计算连续日期的次日留存。"""
+    cols = ["date", "active_users", "retained_next_day", "retention_rate"]
+    if df.empty:
+        return pd.DataFrame(columns=cols)
+    active_by_day = df.groupby(pd.to_datetime(df["date"]).dt.date)["user_id"].apply(set)
     retention_rows = []
     dates = sorted(active_by_day.index)
     for i in range(len(dates) - 1):
         today, tomorrow = dates[i], dates[i + 1]
-        # 只有相邻两天才算次日留存；如果中间缺一天，跳过不算
         if (tomorrow - today).days != 1:
             continue
         today_users = active_by_day[today]
@@ -110,90 +190,134 @@ def main() -> None:
             "date": today,
             "active_users": len(today_users),
             "retained_next_day": retained,
-            "retention_rate": retained / len(today_users) if today_users else 0.0,
+            "retention_rate": safe_div(retained, len(today_users)),
         })
-    retention = pd.DataFrame(retention_rows)
+    return pd.DataFrame(retention_rows, columns=cols)
+
+
+def compute_rfm(df: pd.DataFrame, observe_date=OBSERVE_DATE) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """向量化计算 RFM 指标与 5 类业务分层（解决零购买用户扎堆导致的分层退化）。"""
+    rfm_cols = [
+        "user_id", "last_active_date", "days_since_last_active",
+        "buy_count", "pv_count", "cart_count", "fav_count",
+        "total_behaviors", "R_score", "F_score", "segment",
+    ]
+    seg_cols = ["segment", "users", "avg_buy_count", "avg_days_since_active", "user_share"]
+    if df.empty:
+        return pd.DataFrame(columns=rfm_cols), pd.DataFrame(columns=seg_cols)
+
+    b_counts = (
+        df.groupby(["user_id", "behavior_type"], observed=False)
+        .size()
+        .unstack(fill_value=0)
+    )
+    user_agg = pd.DataFrame(index=b_counts.index)
+    user_agg["last_active"] = df.groupby("user_id")["datetime"].max()
+    user_agg["buy_count"] = b_counts["buy"].astype(int) if "buy" in b_counts.columns else 0
+    user_agg["pv_count"] = b_counts["pv"].astype(int) if "pv" in b_counts.columns else 0
+    user_agg["cart_count"] = b_counts["cart"].astype(int) if "cart" in b_counts.columns else 0
+    user_agg["fav_count"] = b_counts["fav"].astype(int) if "fav" in b_counts.columns else 0
+    user_agg["total_behaviors"] = (
+        user_agg["buy_count"] + user_agg["pv_count"] + user_agg["cart_count"] + user_agg["fav_count"]
+    )
+    user_agg = user_agg.reset_index()
+
+    user_agg["last_active_date"] = pd.to_datetime(user_agg["last_active"]).dt.date
+    user_agg["days_since_last_active"] = compute_days_since_last_active(
+        user_agg["last_active"], observe_date=observe_date
+    )
+    user_agg["R_score"] = score_recency_days(user_agg["days_since_last_active"])
+    user_agg["F_score"] = score_frequency_buys(user_agg["buy_count"])
+
+    r = user_agg["R_score"]
+    f = user_agg["F_score"]
+    user_agg["segment"] = np.select(
+        [
+            (f >= 3) & (r >= 4),
+            (f >= 3) & (r <= 3),
+            (f == 2) & (r >= 4),
+            (f == 1) & (r >= 4),
+        ],
+        [
+            "重要价值用户",
+            "流失风险的高价值用户",
+            "潜力新客（首单待复购）",
+            "一般活跃未购用户",
+        ],
+        default="低频/沉睡用户",
+    )
+
+    rfm = user_agg[rfm_cols].sort_values(["R_score", "F_score"], ascending=False)
+    seg_summary = (
+        rfm.groupby("segment")
+        .agg(
+            users=("user_id", "count"),
+            avg_buy_count=("buy_count", "mean"),
+            avg_days_since_active=("days_since_last_active", "mean"),
+        )
+        .reset_index()
+    )
+    seg_summary["user_share"] = safe_div(seg_summary["users"], float(seg_summary["users"].sum()))
+    seg_summary = seg_summary.sort_values("users", ascending=False)
+    return rfm, seg_summary[seg_cols]
+
+
+def main() -> None:
+    check_input()
+    OUT_DIR.mkdir(parents=True, exist_ok=True)
+    FIG_DIR.mkdir(parents=True, exist_ok=True)
+
+    df = pd.read_csv(
+        SAMPLE_FILE,
+        usecols=["user_id", "behavior_type", "datetime"],
+        dtype={"user_id": "int64", "behavior_type": "category"},
+        parse_dates=["datetime"],
+    )
+    if df.empty:
+        print("输入样本为空，跳过分析。")
+        return
+
+    df["date"] = df["datetime"].dt.normalize()
+    print(f"读入抽样数据：{len(df):,} 行，{df['user_id'].nunique():,} 人")
+    print(f"时间范围：{df['date'].min().date()} 至 {df['date'].max().date()}")
+
+    cov_funnel = compute_coverage_funnel(df)
+    seq_funnel = compute_sequential_funnel(df)
+    cov_funnel.to_csv(OUT_DIR / "funnel_summary.csv", index=False)
+    seq_funnel.to_csv(OUT_DIR / "funnel_sequential_summary.csv", index=False)
+    print("\n[口径 A] 普通行为覆盖漏斗（独立用户数 vs 行为次数）：")
+    print(cov_funnel.round(4))
+    print("\n[口径 B] 时序转化漏斗（pv -> pv后cart/fav -> intent后buy）：")
+    print(seq_funnel.round(4))
+
+    retention = compute_retention(df)
     retention.to_csv(OUT_DIR / "retention_summary.csv", index=False)
     print("\n次日留存：")
     print(retention.round(4))
     if not retention.empty:
         print(f"平均次日留存率：{retention['retention_rate'].mean():.2%}")
 
-    # ---------- RFM 分层（无 M） ----------
-    user_agg = df.groupby("user_id").agg(
-        last_active=("datetime", "max"),
-        buy_count=("behavior_type", lambda s: int((s == "buy").sum())),
-        pv_count=("behavior_type", lambda s: int((s == "pv").sum())),
-        cart_count=("behavior_type", lambda s: int((s == "cart").sum())),
-        fav_count=("behavior_type", lambda s: int((s == "fav").sum())),
-        total_behaviors=("behavior_type", "size"),
-    ).reset_index()
-    user_agg["last_active_date"] = user_agg["last_active"].dt.date
-    user_agg["days_since_last_active"] = (
-        pd.Timestamp(OBSERVE_DATE) - user_agg["last_active"]
-    ).dt.days
-    # R：天数越小越好；F：购买次数越多越好
-    user_agg["R_score"] = score_1_to_5(
-        user_agg["days_since_last_active"].rank(pct=True), higher_is_better=False
-    )
-    user_agg["F_score"] = score_1_to_5(
-        user_agg["buy_count"].rank(pct=True), higher_is_better=True
-    )
-
-    def segment(row) -> str:
-        """按 R、F 得分分一层。"""
-        if row["F_score"] >= 4 and row["R_score"] >= 4:
-            return "重要价值用户"
-        if row["F_score"] >= 4 and row["R_score"] <= 2:
-            return "流失风险的高价值用户"
-        if row["F_score"] <= 2 and row["R_score"] >= 4:
-            return "新客 / 低频活跃用户"
-        if row["F_score"] <= 2 and row["R_score"] <= 2:
-            return "流失风险的低频用户"
-        return "一般用户"
-
-    user_agg["segment"] = user_agg.apply(segment, axis=1)
-    rfm = user_agg[[
-        "user_id", "last_active_date", "days_since_last_active",
-        "buy_count", "pv_count", "cart_count", "fav_count",
-        "total_behaviors", "R_score", "F_score", "segment",
-    ]].sort_values(["R_score", "F_score"], ascending=False)
+    observe_date = df["datetime"].dt.date.max()
+    rfm, seg_summary = compute_rfm(df, observe_date=observe_date)
     rfm.to_csv(OUT_DIR / "rfm_users.csv", index=False)
-
-    seg_summary = (
-        rfm.groupby("segment")
-        .agg(users=("user_id", "count"),
-             avg_buy_count=("buy_count", "mean"),
-             avg_days_since_active=("days_since_last_active", "mean"))
-        .reset_index()
-    )
-    seg_summary["user_share"] = seg_summary["users"] / seg_summary["users"].sum()
-    seg_summary = seg_summary.sort_values("users", ascending=False)
     seg_summary.to_csv(OUT_DIR / "rfm_summary.csv", index=False)
-    print("\nRFM 分层（R=距上次活跃天数，F=购买次数，无 M）：")
+    print("\nRFM 业务分层（R=距观察日天数分箱，F=购买次数阈值分箱，无 M）：")
     print(seg_summary.round(3))
-    buyers = int((rfm["buy_count"] > 0).sum())
-    print(f"\n有购买行为的用户：{buyers:,} 人，占全部 {buyers / len(rfm):.2%}")
-    print("提醒：没有价格列，算不了消费金额和 GMV，报告里别写金额结论。")
 
-    # 图表
-    # matplotlib 默认字体 DejaVu Sans 没有中文，RFM 分层名是中文，
-    # 直接画图会显示成方框。所以图里只用英文标签，
-    # 中文分层名还留在 rfm_users.csv 和 REPORT.md 里。
     SEGMENT_EN = {
         "重要价值用户": "High-value",
         "流失风险的高价值用户": "High-value at risk",
-        "新客 / 低频活跃用户": "New / low-frequency",
-        "流失风险的低频用户": "Low-frequency at risk",
-        "一般用户": "Regular",
+        "潜力新客（首单待复购）": "Potential new (1 buy)",
+        "一般活跃未购用户": "Active non-buyer",
+        "低频/沉睡用户": "Low-freq / dormant",
     }
     plt.rcParams["font.sans-serif"] = ["DejaVu Sans"]
     plt.rcParams["axes.unicode_minus"] = False
 
-    # 图 1：漏斗（人数口径）
+    # 图 1：时序转化漏斗（人数口径）
     fig, ax = plt.subplots(figsize=(8, 4))
-    funnel.set_index("stage")["users"].reindex(stages).plot.bar(ax=ax)
-    ax.set_title("Conversion funnel by users (sampled)")
+    seq_funnel.set_index("step")["users"].plot.bar(ax=ax)
+    ax.set_title("Sequential conversion funnel by users (user-sampled)")
     ax.set_ylabel("Users")
     fig.tight_layout()
     fig.savefig(FIG_DIR / "funnel_users.png", dpi=150)
@@ -203,7 +327,7 @@ def main() -> None:
     if not retention.empty:
         fig, ax = plt.subplots(figsize=(10, 4))
         retention.set_index("date")["retention_rate"].plot(ax=ax, marker="o")
-        ax.set_title("Next-day retention rate (sampled)")
+        ax.set_title("Next-day retention rate (user-sampled)")
         ax.set_xlabel("Date")
         ax.set_ylabel("Retention rate")
         ax.set_ylim(0, 1)
@@ -211,26 +335,24 @@ def main() -> None:
         fig.savefig(FIG_DIR / "retention.png", dpi=150)
         plt.close(fig)
 
-    # 图 3：RFM 分层人数，图里用英文标签，免得中文变方框
-    # Regular 占 97.2%，另外两类只有 1.5% / 1.2%，直接画条形图小类几乎看不见，
-    # 每根条后面都标上具体人数。
+    # 图 3：RFM 分层人数
     fig, ax = plt.subplots(figsize=(10, 5))
     seg_chart = seg_summary.copy()
     seg_chart["segment_en"] = seg_chart["segment"].map(SEGMENT_EN).fillna(seg_chart["segment"])
-    seg_chart.set_index("segment_en")["users"].sort_values().plot.barh(ax=ax)
-    ax.set_title("RFM segments by user count (sampled)")
+    ordered = seg_chart.set_index("segment_en")["users"].sort_values()
+    ordered.plot.barh(ax=ax)
+    ax.set_title("RFM segments by user count (user-sampled)")
     ax.set_xlabel("Users")
     ax.set_ylabel("Segment")
-    for i, v in enumerate(seg_chart.set_index("segment_en")["users"].sort_values()):
-        ax.text(v + 8000, i, f"{v:,}", va="center", fontsize=10)
-    ax.set_xlim(0, 580000)
+    max_users = max(1, int(ordered.max()))
+    for i, v in enumerate(ordered):
+        ax.text(v + max_users * 0.015, i, f"{v:,}", va="center", fontsize=10)
+    ax.set_xlim(0, max_users * 1.18)
     fig.tight_layout()
     fig.savefig(FIG_DIR / "rfm_segments.png", dpi=150)
     plt.close(fig)
 
     print("已保存图表到 outputs/figures/：funnel_users、retention、rfm_segments")
-    print("\n完成。下一步：按 outputs/ 里的数字写一页结论，3 个发现 + 3 条建议，"
-          "每条建议带一个数字证据。")
 
 
 if __name__ == "__main__":
