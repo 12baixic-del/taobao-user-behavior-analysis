@@ -242,5 +242,68 @@ class TestDualFunnelsAndSafety(unittest.TestCase):
                 self.assertFalse(np.isinf(res[num_cols]).any().any())
 
 
+class TestSequentialFunnelTemporalRules(unittest.TestCase):
+    """GPT 复审要求：Q3/Q9 的 ">=" 时序判断须有同秒、反序与跨商品测试。
+
+    规则（Python 版与 SQL 版一致，均用 ">="）：
+    - 意向与首次 pv 同秒、购买与首次意向同秒时，计入路径内；
+      真实样本中锚点同秒为 0 例，该规则只影响合成边界数据。
+    - 反序行为（购买在首次意向之前、意向在首次浏览之前）不得计入时序路径，
+      但仍计入覆盖口径。
+    - 漏斗是用户级、跨商品的行为顺序：实现只看 (user_id, behavior_type,
+      datetime)，不看 item_id；同一用户在不同商品上的浏览/意向/购买
+      按时间排序即算一条路径，不等于真实商品交易路径。
+    """
+
+    def test_same_second_intent_and_buy_counted(self):
+        """同秒：cart 与 pv 同秒、buy 与 cart 同秒时，">=" 计入路径内。"""
+        df = pd.DataFrame([
+            (1, "pv", pd.Timestamp("2017-12-01 10:00:00")),
+            (1, "cart", pd.Timestamp("2017-12-01 10:00:00")),
+            (1, "buy", pd.Timestamp("2017-12-01 10:00:00")),
+        ], columns=["user_id", "behavior_type", "datetime"])
+        seq = rfm_mod.compute_sequential_funnel(df).set_index("step")
+        self.assertEqual(int(seq.loc["pv", "users"]), 1)
+        self.assertEqual(int(seq.loc["pv_to_intent(cart|fav)", "users"]), 1)
+        self.assertEqual(int(seq.loc["intent_to_buy", "users"]), 1)
+
+    def test_reverse_order_excluded_from_sequential_but_kept_in_coverage(self):
+        """反序：购买在首次意向之前、意向在首次浏览之前，不得计入时序路径。"""
+        df = pd.DataFrame([
+            # 用户 1：先 buy(09:00) 后 cart(11:00)，有 pv 但购买在意向之前
+            (1, "pv", pd.Timestamp("2017-12-01 10:00:00")),
+            (1, "buy", pd.Timestamp("2017-12-01 09:00:00")),
+            (1, "cart", pd.Timestamp("2017-12-01 11:00:00")),
+            # 用户 2：先 fav(09:00) 后 pv(10:00)，意向在浏览之前
+            (2, "fav", pd.Timestamp("2017-12-01 09:00:00")),
+            (2, "pv", pd.Timestamp("2017-12-01 10:00:00")),
+            (2, "buy", pd.Timestamp("2017-12-01 11:00:00")),
+        ], columns=["user_id", "behavior_type", "datetime"])
+        cov = rfm_mod.compute_coverage_funnel(df).set_index("stage")
+        seq = rfm_mod.compute_sequential_funnel(df).set_index("step")
+        # 覆盖口径：两人都有 pv 与 buy，用户 1 有 cart，用户 2 有 fav
+        self.assertEqual(int(cov.loc["buy", "users"]), 2)
+        self.assertEqual(int(cov.loc["cart_or_fav", "users"]), 2)
+        # 时序口径：用户 1 计入 pv_to_intent 但不计入 intent_to_buy；
+        # 用户 2 不计入 pv_to_intent（意向在 pv 之前），也不计入 intent_to_buy
+        self.assertEqual(int(seq.loc["pv_to_intent(cart|fav)", "users"]), 1)
+        self.assertEqual(int(seq.loc["intent_to_buy", "users"]), 0)
+
+    def test_cross_item_path_counts_at_user_level(self):
+        """跨商品：pv 商品 A → cart 商品 B → buy 商品 C，仍计入时序路径。
+
+        实现只使用 (user_id, behavior_type, datetime)，不看 item_id，
+        因此这是设计如此的用户级跨商品顺序，不是按商品的交易路径。
+        """
+        df = pd.DataFrame([
+            (1, 101, "pv", pd.Timestamp("2017-12-01 10:00:00")),
+            (1, 202, "cart", pd.Timestamp("2017-12-01 10:05:00")),
+            (1, 303, "buy", pd.Timestamp("2017-12-01 10:10:00")),
+        ], columns=["user_id", "item_id", "behavior_type", "datetime"])
+        seq = rfm_mod.compute_sequential_funnel(df).set_index("step")
+        self.assertEqual(int(seq.loc["pv_to_intent(cart|fav)", "users"]), 1)
+        self.assertEqual(int(seq.loc["intent_to_buy", "users"]), 1)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

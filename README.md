@@ -7,7 +7,7 @@
 
 > [!IMPORTANT]
 > **版本与数据状态声明（v2）**
-> - 本分支（v2）已完成流式清洗抽样、UTC+8 时区修正、R+F 分层、覆盖/时序双漏斗及 13 项自动化测试的工程重构。
+> - 本分支（v2）已完成流式清洗抽样、UTC+8 时区修正、R+F 分层、覆盖/时序双漏斗及 19 项自动化测试的工程重构。
 > - **真实数据复算已完成（2026-11-13）**：100,150,807 行全量扫描，业务结论见 REPORT.md §3。
 > - 仓库早期 v1 版本的输出（含 `527,696` 人、`3.99%` 转化率与旧 RFM 结果）存在按行抽样与口径偏差，已完整归档至 [`docs/legacy/REPORT_v1.md`](docs/legacy/REPORT_v1.md) 与 [`outputs/legacy_v1/`](outputs/legacy_v1/README.md) 仅作历史追溯，**不作为 v2 新版分析结论**。
 
@@ -41,7 +41,7 @@
 | 数据处理 | `Python 3.13` / `pandas>=2.0` / `numpy>=1.24` | 单遍分块流式读取、向量化哈希抽样、分组聚合 |
 | 可视化 | `matplotlib>=3.6` / `seaborn>=0.13` | 趋势图、漏斗图、留存率与 RFM 分层柱状图（`Agg` 无头渲染） |
 | 性能与内存度量 | `psutil>=5.9` | 独立子进程测量 `peak_wset`（峰值工作集）与内存增量 |
-| 质量保障与 CI | `unittest` / `GitHub Actions` | 13 项单元测试/边界测试/回归测试与自动 CI 门禁 |
+| 质量保障与 CI | `unittest` / `GitHub Actions` | 19 项单元测试/边界测试/回归测试与自动 CI 门禁 |
 
 ---
 
@@ -63,9 +63,11 @@ taobao-user-behavior-analysis/
 │   ├── 01_data_cleaning_eda.py     # 单遍流式清洗 + 自适应 user_id 整群抽样 + EDA
 │   └── 02_funnel_rfm_analysis.py   # 覆盖/时序双漏斗 + 次日留存 + R+F 分层（无 M）
 ├── outputs/
+│   ├── top_categories.csv / funnel_nonpath_split.csv / funnel_cross_item.csv  # 看板小表（已提交，无需原始样本）
 │   └── legacy_v1/                  # v1 历史汇总 CSV 与图表归档（已标注历史口径说明）
 ├── tests/
-│   └── test_analysis.py            # 13 项单元/边界/回归测试（含跨 chunk 完整度与脏行容错）
+│   ├── test_analysis.py            # 16 项单元/边界/回归测试（含跨 chunk 完整度与脏行容错）
+│   └── test_sql_funnel.py          # 3 项 SQL 实测（Q3/Q9/Q9b 同秒/反序/跨商品时序规则）
 ├── .gitignore                      # 排除原始 CSV、抽样大表、缓存、虚拟环境与密钥
 ├── REPORT.md                       # v2 分析框架、口径说明与历史对比报告
 ├── README.md                       # 项目工程文档
@@ -155,13 +157,17 @@ flowchart LR
 
 ## 8. 自动化测试
 
-[`tests/test_analysis.py`](tests/test_analysis.py) 包含 **13 项自动化测试**，覆盖：
+[`tests/`](tests/) 共 **19 项自动化测试**（`test_analysis.py` 16 项 +
+[`test_sql_funnel.py`](tests/test_sql_funnel.py) 3 项），覆盖：
 - UTC → 北京时间（`UTC+8`）秒级上下边界过滤
 - 跨分块去重与自适应阈值收紧下的 `user_id` 完整序列保留（`len(sampled) < 400` 且全序列无截断）
 - 脏行容错（缺失 `user_id`、非法字符串时间戳）与单一大户极端倾斜保护（不崩溃、不删空）
 - `target_rows <= 0` 与 `chunksize <= 0` 参数边界校验
 - 实测 31.9% 零购买分布下 R+F 分层及 `days_since_last_active` 负数截断
 - 覆盖漏斗 vs 严格时序漏斗的反序行为区分与除零/`NaN`/`inf` 安全防护
+- 时序规则：同秒意向/购买计入路径（`>=`）、反序行为剔除、跨商品路径按用户级计入
+- SQL 实测：对合成数据直接运行 `sql/queries.sql` 的 Q3/Q9/Q9b，验证
+  同秒/反序/跨商品用例与 1,510 人分流（767 无意向 / 743 顺序不满足）
 
 ```bash
 python -m unittest discover -s tests -v
@@ -177,7 +183,7 @@ git clone https://github.com/12baixic-del/taobao-user-behavior-analysis.git
 cd taobao-user-behavior-analysis
 pip install -r requirements.txt
 
-# 1. 运行 13 项自动化测试
+# 1. 运行 19 项自动化测试
 python -m unittest discover -s tests -v
 
 # 2. 复现合成数据性能基准（可选，将生成并清理临时 10万/100万/1000万行 CSV）
@@ -200,6 +206,6 @@ python notebooks/02_funnel_rfm_analysis.py
 - **真实数据已复算（2026-11-13）**：100,150,807 行全量扫描完成，漏斗、留存与 R+F 分层结论见 REPORT.md §3；样本为 10,053 用户整群抽样（总体 1.02%）。
 - **字段客观局限**：原始数据无价格/订单金额与类目中文名，无法核算 GMV，RFM 模型缺少 M 维度；9 天窗口仅反映双 12 预热期特征，难以度量月度复购周期。
 - **后续计划**：
-  - ~~补齐 SQL 业务查询（T1-3）与 Streamlit 看板（T1-4）~~ **已完成（2026-11-13）**：SQL 10 条业务查询见 `sql/`（与 Python 版逐项对上，0 差异）；Streamlit 看板见 `app.py`，演示流程见 `docs/demo-guide.md`，管理层摘要见 `docs/management-summary.md`。
+  - ~~补齐 SQL 业务查询（T1-3）与 Streamlit 看板（T1-4）~~ **已完成（2026-11-13）**：SQL 11 条业务查询见 `sql/`（Q1–Q5 与 Python 版逐项对上，0 差异；Q6/Q7/Q9/Q9b/Q10 为 SQL 新发现，Q9b 为 1,510 人分流）；Streamlit 看板见 `app.py`，演示流程见 `docs/demo-guide.md`，管理层摘要见 `docs/management-summary.md`。
   - 类目与分时段下钻**已部分完成**：Top 10 类目与分时段转化见 `sql/README.md`（Q6/Q7）；下一步可按类目下钻转化漏斗（分时段 × 类目交叉）与月度复购验证（需更长窗口数据）。
   - 待办：Codex 终审（Codex CLI 环境缺失，待修复后补跑）。

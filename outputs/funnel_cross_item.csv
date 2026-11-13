@@ -1,0 +1,3 @@
+group_name,users,definition
+bought_intended_item,2797,完整路径购买用户中，至少购买过一件意向商品
+bought_only_unintended,2539,完整路径购买用户中，购买的全部是未意向过的商品

@@ -50,7 +50,12 @@ FROM sample WHERE behavior_type = 'buy';
 
 -- Q3：时序漏斗 pv → 意向 → 购买（口径 B）
 -- 业务问题：沿“浏览 → 产生意向 → 最终下单”主路径，转化效率如何？
--- 口径：严格按时间先后（首次 pv 之后的意向、首次意向之后的购买）；直接购买不在该路径内。
+-- 口径：严格按时间先后（首次 pv 之后的意向、首次意向之后的购买）。
+--   1,510 名购买用户未满足该路径，不得统称为“直接购买”：767 人无任何
+--   意向记录，743 人有意向但顺序不满足（见 Q9b 分流）。
+--   同秒边界：意向与首次 pv 同秒、购买与首次意向同秒时，“>=”将其计入
+--   路径内；真实样本中该情况为 0 例（见 tests/test_analysis.py）。
+-- 漏斗口径：用户级、跨商品的行为顺序，不等于真实商品交易路径。
 WITH first_pv AS (
     SELECT user_id, MIN(datetime) AS t_pv
     FROM sample WHERE behavior_type = 'pv' GROUP BY user_id
@@ -77,8 +82,8 @@ SELECT 'intent_to_buy', (SELECT COUNT(*) FROM buy_after_intent),
        ROUND(1.0 * (SELECT COUNT(*) FROM buy_after_intent) / (SELECT COUNT(*) FROM first_intent), 4),
        ROUND(1.0 * (SELECT COUNT(*) FROM buy_after_intent) / (SELECT COUNT(*) FROM first_pv), 4);
 
--- Q4：次日留存率（工作日与周末分开看）
--- 业务问题：用户第二天还回不回来？工作日与周末有无差异？
+-- Q4：次日留存率（按日期分组呈现，不得简称为工作日与周末）
+-- 业务问题：用户第二天还回不回来？前 6 段与后 2 段有无差异？
 -- 口径：留存率 = |当日活跃用户 ∩ 次日活跃用户| / |当日活跃用户|；12-03 无次日，自动排除。
 WITH daily AS (
     SELECT date, user_id FROM sample GROUP BY date, user_id
@@ -209,6 +214,45 @@ SELECT 'any_intent',
        (SELECT COUNT(*) FROM loose_intent),
        (SELECT COUNT(*) FROM loose_buyers),
        ROUND(1.0 * (SELECT COUNT(*) FROM loose_buyers) / (SELECT COUNT(*) FROM loose_intent), 4);
+
+-- Q9b：未满足完整时序路径的购买用户分流（1,510 人）
+-- 业务问题：1,510 名未满足完整时序路径的购买用户由哪两类人构成？
+-- 口径：无意向购买 = 窗口内无任何加购/收藏记录的购买用户（767 人）；
+--   顺序不满足 = 有意向记录，但首次购买在首次意向之前、或首次意向在
+--   首次浏览之前、或无浏览记录（743 人）。两类人不得混称为“直接购买”。
+WITH seq_buyers AS (
+    SELECT DISTINCT s.user_id
+    FROM sample s
+    JOIN (SELECT user_id, MIN(datetime) AS t_pv
+          FROM sample WHERE behavior_type = 'pv' GROUP BY user_id) p
+        ON s.user_id = p.user_id
+    JOIN (SELECT s2.user_id, MIN(s2.datetime) AS t_intent
+          FROM sample s2
+          JOIN (SELECT user_id, MIN(datetime) AS t_pv
+                FROM sample WHERE behavior_type = 'pv' GROUP BY user_id) p2
+              ON s2.user_id = p2.user_id
+          WHERE s2.behavior_type IN ('cart', 'fav') AND s2.datetime >= p2.t_pv
+          GROUP BY s2.user_id) i ON s.user_id = i.user_id
+    WHERE s.behavior_type = 'buy' AND s.datetime >= i.t_intent
+),
+non_path AS (
+    SELECT DISTINCT user_id FROM sample WHERE behavior_type = 'buy'
+    EXCEPT
+    SELECT user_id FROM seq_buyers
+),
+no_intent AS (
+    SELECT user_id FROM non_path
+    WHERE user_id NOT IN (
+        SELECT DISTINCT user_id FROM sample WHERE behavior_type IN ('cart', 'fav')
+    )
+)
+SELECT 'no_intent_buyers' AS group_name, COUNT(*) AS users,
+       '窗口内无任何加购/收藏记录的购买用户' AS definition
+FROM no_intent
+UNION ALL
+SELECT 'wrong_order_buyers', COUNT(*),
+       '有意向记录但顺序不满足（首次购买在首次意向之前、首次意向在首次浏览之前、或无浏览记录）'
+FROM non_path WHERE user_id NOT IN (SELECT user_id FROM no_intent);
 
 -- Q10：日环比——每日 PV 与购买人数的 LAG 日增长率（窗口函数）
 -- 业务问题：流量与购买人数逐日如何波动？双 12 临近的周末跳升幅度多大？
