@@ -1,8 +1,13 @@
 import importlib.util
+import os
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+
+# Matplotlib needs a writable config dir at import time; CI/review sandboxes
+# may not provide one via HOME. Point it at a temp dir first.
+os.environ.setdefault("MPLCONFIGDIR", tempfile.mkdtemp(prefix="mplconfig-"))
 
 import numpy as np
 import pandas as pd
@@ -183,6 +188,18 @@ class TestRFMBusinessSegments(unittest.TestCase):
         self.assertEqual(zero_f, [1])
         self.assertTrue((rfm["days_since_last_active"] >= 0).all())
 
+    def test_score_recency_days_bins(self):
+        """验证 R 业务分箱全区间打分：0-1天=5, 2-3天=4, 4-5天=3, 6-7天=2, >=8天=1。"""
+        days = pd.Series([0, 1, 2, 3, 4, 5, 6, 7, 8])
+        scores = rfm_mod.score_recency_days(days)
+        self.assertEqual(scores.tolist(), [5, 5, 4, 4, 3, 3, 2, 2, 1])
+
+    def test_score_frequency_buys_bins(self):
+        """验证 F 业务分箱阈值打分：0次=1, 1次=2, 2次=3, 3-4次=4, >=5次=5。"""
+        buys = pd.Series([0, 1, 2, 3, 4, 5])
+        scores = rfm_mod.score_frequency_buys(buys)
+        self.assertEqual(scores.tolist(), [1, 2, 3, 4, 4, 5])
+
 
 class TestDualFunnelsAndSafety(unittest.TestCase):
     def test_coverage_vs_sequential_funnel_distinction(self):
@@ -215,6 +232,51 @@ class TestDualFunnelsAndSafety(unittest.TestCase):
         self.assertAlmostEqual(float(cov.loc["buy", "user_coverage_vs_pv"]), 2 / 3, places=4)
         self.assertAlmostEqual(float(seq.loc["intent_to_buy", "overall_conv_from_pv"]), 1 / 3, places=4)
 
+    def test_coverage_funnel_excludes_non_pv_users(self):
+        """2026-11-14 复审整改：覆盖口径的 users 与 user_coverage_vs_pv 只统计
+        浏览用户集合；无浏览记录的用户（即使有加购/购买）不计入覆盖人数。
+        behaviors 列仍为全样本事件次数（与 Q6/Q7 的事件转化率一致）。
+
+        合成 6 人与 tests/test_sql_funnel.py 的 SQL 用例逐人对应：
+        U1/U2: pv+cart+buy；U3: buy→pv→cart；U4: fav→pv→buy；
+        U5: pv+buy（无意向）；U6: cart+buy（无 pv）。
+        真实样本对照：45 名无浏览用户（35 人购买、42 人加购、24 人收藏）
+        被排除后，购买覆盖率由 68.4%（6,846/10,008）修正为 68.1%
+        （6,811/10,008）。
+        """
+        df = pd.DataFrame([
+            (1, "pv", pd.Timestamp("2017-12-01 10:00:00")),
+            (1, "cart", pd.Timestamp("2017-12-01 10:05:00")),
+            (1, "buy", pd.Timestamp("2017-12-01 10:10:00")),
+            (2, "pv", pd.Timestamp("2017-12-01 10:00:00")),
+            (2, "cart", pd.Timestamp("2017-12-01 10:00:00")),
+            (2, "buy", pd.Timestamp("2017-12-01 10:00:00")),
+            (3, "buy", pd.Timestamp("2017-12-01 09:00:00")),
+            (3, "pv", pd.Timestamp("2017-12-01 10:00:00")),
+            (3, "cart", pd.Timestamp("2017-12-01 11:00:00")),
+            (4, "fav", pd.Timestamp("2017-12-01 09:00:00")),
+            (4, "pv", pd.Timestamp("2017-12-01 10:00:00")),
+            (4, "buy", pd.Timestamp("2017-12-01 11:00:00")),
+            (5, "pv", pd.Timestamp("2017-12-01 10:00:00")),
+            (5, "buy", pd.Timestamp("2017-12-01 10:30:00")),
+            (6, "cart", pd.Timestamp("2017-12-01 09:00:00")),
+            (6, "buy", pd.Timestamp("2017-12-01 09:30:00")),
+        ], columns=["user_id", "behavior_type", "datetime"])
+        cov = rfm_mod.compute_coverage_funnel(df).set_index("stage")
+        # users：U6（无 pv）不计入任何一行
+        self.assertEqual(int(cov.loc["pv", "users"]), 5)
+        self.assertEqual(int(cov.loc["cart", "users"]), 3)
+        self.assertEqual(int(cov.loc["fav", "users"]), 1)
+        self.assertEqual(int(cov.loc["cart_or_fav", "users"]), 4)
+        self.assertEqual(int(cov.loc["buy", "users"]), 5)
+        self.assertAlmostEqual(float(cov.loc["cart", "user_coverage_vs_pv"]), 0.6, places=4)
+        self.assertAlmostEqual(float(cov.loc["fav", "user_coverage_vs_pv"]), 0.2, places=4)
+        self.assertAlmostEqual(float(cov.loc["cart_or_fav", "user_coverage_vs_pv"]), 0.8, places=4)
+        self.assertAlmostEqual(float(cov.loc["buy", "user_coverage_vs_pv"]), 1.0, places=4)
+        # behaviors：全样本事件次数，U6 的 cart/buy 事件仍计入
+        self.assertEqual(int(cov.loc["cart", "behaviors"]), 4)
+        self.assertEqual(int(cov.loc["buy", "behaviors"]), 6)
+
     def test_zero_division_no_nan_no_inf(self):
         """边界测试：空表与非空无 pv 数据下，两种漏斗均不产生 NaN、inf 或 ZeroDivisionError。"""
         empty_df = pd.DataFrame(columns=["user_id", "behavior_type", "datetime"])
@@ -228,6 +290,69 @@ class TestDualFunnelsAndSafety(unittest.TestCase):
                 num_cols = res.select_dtypes(include=[np.number]).columns
                 self.assertFalse(res[num_cols].isna().any().any())
                 self.assertFalse(np.isinf(res[num_cols]).any().any())
+
+
+class TestSequentialFunnelTemporalRules(unittest.TestCase):
+    """GPT 复审要求：Q3/Q9 的 ">=" 时序判断须有同秒、反序与跨商品测试。
+
+    规则（Python 版与 SQL 版一致，均用 ">="）：
+    - 意向与首次 pv 同秒、购买与首次意向同秒时，计入路径内；
+      真实样本中锚点同秒为 0 例，该规则只影响合成边界数据。
+    - 反序行为（购买在首次意向之前、意向在首次浏览之前）不得计入时序路径，
+      但仍计入覆盖口径。
+    - 漏斗是用户级、跨商品的行为顺序：实现只看 (user_id, behavior_type,
+      datetime)，不看 item_id；同一用户在不同商品上的浏览/意向/购买
+      按时间排序即算一条路径，不等于真实商品交易路径。
+    """
+
+    def test_same_second_intent_and_buy_counted(self):
+        """同秒：cart 与 pv 同秒、buy 与 cart 同秒时，">=" 计入路径内。"""
+        df = pd.DataFrame([
+            (1, "pv", pd.Timestamp("2017-12-01 10:00:00")),
+            (1, "cart", pd.Timestamp("2017-12-01 10:00:00")),
+            (1, "buy", pd.Timestamp("2017-12-01 10:00:00")),
+        ], columns=["user_id", "behavior_type", "datetime"])
+        seq = rfm_mod.compute_sequential_funnel(df).set_index("step")
+        self.assertEqual(int(seq.loc["pv", "users"]), 1)
+        self.assertEqual(int(seq.loc["pv_to_intent(cart|fav)", "users"]), 1)
+        self.assertEqual(int(seq.loc["intent_to_buy", "users"]), 1)
+
+    def test_reverse_order_excluded_from_sequential_but_kept_in_coverage(self):
+        """反序：购买在首次意向之前、意向在首次浏览之前，不得计入时序路径。"""
+        df = pd.DataFrame([
+            # 用户 1：先 buy(09:00) 后 cart(11:00)，有 pv 但购买在意向之前
+            (1, "pv", pd.Timestamp("2017-12-01 10:00:00")),
+            (1, "buy", pd.Timestamp("2017-12-01 09:00:00")),
+            (1, "cart", pd.Timestamp("2017-12-01 11:00:00")),
+            # 用户 2：先 fav(09:00) 后 pv(10:00)，意向在浏览之前
+            (2, "fav", pd.Timestamp("2017-12-01 09:00:00")),
+            (2, "pv", pd.Timestamp("2017-12-01 10:00:00")),
+            (2, "buy", pd.Timestamp("2017-12-01 11:00:00")),
+        ], columns=["user_id", "behavior_type", "datetime"])
+        cov = rfm_mod.compute_coverage_funnel(df).set_index("stage")
+        seq = rfm_mod.compute_sequential_funnel(df).set_index("step")
+        # 覆盖口径：两人都有 pv 与 buy，用户 1 有 cart，用户 2 有 fav
+        self.assertEqual(int(cov.loc["buy", "users"]), 2)
+        self.assertEqual(int(cov.loc["cart_or_fav", "users"]), 2)
+        # 时序口径：用户 1 计入 pv_to_intent 但不计入 intent_to_buy；
+        # 用户 2 不计入 pv_to_intent（意向在 pv 之前），也不计入 intent_to_buy
+        self.assertEqual(int(seq.loc["pv_to_intent(cart|fav)", "users"]), 1)
+        self.assertEqual(int(seq.loc["intent_to_buy", "users"]), 0)
+
+    def test_cross_item_path_counts_at_user_level(self):
+        """跨商品：pv 商品 A → cart 商品 B → buy 商品 C，仍计入时序路径。
+
+        实现只使用 (user_id, behavior_type, datetime)，不看 item_id，
+        因此这是设计如此的用户级跨商品顺序，不是按商品的交易路径。
+        """
+        df = pd.DataFrame([
+            (1, 101, "pv", pd.Timestamp("2017-12-01 10:00:00")),
+            (1, 202, "cart", pd.Timestamp("2017-12-01 10:05:00")),
+            (1, 303, "buy", pd.Timestamp("2017-12-01 10:10:00")),
+        ], columns=["user_id", "item_id", "behavior_type", "datetime"])
+        seq = rfm_mod.compute_sequential_funnel(df).set_index("step")
+        self.assertEqual(int(seq.loc["pv_to_intent(cart|fav)", "users"]), 1)
+        self.assertEqual(int(seq.loc["intent_to_buy", "users"]), 1)
 
 
 if __name__ == "__main__":

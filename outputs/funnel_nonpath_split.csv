@@ -1,0 +1,3 @@
+group_name,users,definition
+no_intent_buyers,767,窗口内无任何加购/收藏记录的购买用户
+wrong_order_buyers,743,有意向记录但顺序不满足（首次购买在首次意向之前、首次意向在首次浏览之前、或无浏览记录）

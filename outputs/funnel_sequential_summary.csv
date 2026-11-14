@@ -1,0 +1,4 @@
+step,users,behaviors,step_conv_from_prev,overall_conv_from_pv
+pv,10008,906054,1.0,1.0
+pv_to_intent(cart|fav),8583,81463,0.8576139088729017,0.8576139088729017
+intent_to_buy,5336,15008,0.6216940463707329,0.5331734612310152

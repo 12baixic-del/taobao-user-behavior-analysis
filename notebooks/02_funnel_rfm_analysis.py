@@ -95,7 +95,15 @@ def score_frequency_buys(buy_count: pd.Series) -> pd.Series:
 
 
 def compute_coverage_funnel(df: pd.DataFrame) -> pd.DataFrame:
-    """口径 A：普通行为覆盖漏斗（区分独立用户数与行为次数，cart 与 fav 并列展示）。"""
+    """口径 A：普通行为覆盖漏斗（区分独立用户数与行为次数，cart 与 fav 并列展示）。
+
+    口径规则（2026-11-14 复审整改）：`users` 与 `user_coverage_vs_pv`
+    只统计浏览用户集合（发生过 pv 的用户）——分子分母同一集合；45 名
+    无浏览记录的用户（其中 35 人购买、42 人加购、24 人收藏）不计入覆盖
+    人数。`behaviors` 与 `behavior_ratio_vs_pv` 仍为全样本事件口径
+    （购买事件 / 浏览事件），与 Q6/Q7 的事件转化率一致，见 REPORT §2.1。
+    """
+    pv_user_ids = set(df.loc[df["behavior_type"] == "pv", "user_id"])
     stages = [
         ("pv", ["pv"]),
         ("cart", ["cart"]),
@@ -106,9 +114,11 @@ def compute_coverage_funnel(df: pd.DataFrame) -> pd.DataFrame:
     rows = []
     for stage_name, b_list in stages:
         sub = df[df["behavior_type"].isin(b_list)] if not df.empty else df
+        # users：仅计浏览用户集合内的独立用户；behaviors：全样本事件次数
+        sub_users = sub[sub["user_id"].isin(pv_user_ids)] if not sub.empty else sub
         rows.append({
             "stage": stage_name,
-            "users": int(sub["user_id"].nunique()) if not sub.empty else 0,
+            "users": int(sub_users["user_id"].nunique()) if not sub_users.empty else 0,
             "behaviors": int(len(sub)),
         })
     funnel = pd.DataFrame(rows)
@@ -297,7 +307,7 @@ def main() -> None:
     if not retention.empty:
         print(f"平均次日留存率：{retention['retention_rate'].mean():.2%}")
 
-    observe_date = df["datetime"].dt.date.max()
+    observe_date = OBSERVE_DATE  # 锁定为常量，防止样本最大日期变化导致 R 静默漂移
     rfm, seg_summary = compute_rfm(df, observe_date=observe_date)
     rfm.to_csv(OUT_DIR / "rfm_users.csv", index=False)
     seg_summary.to_csv(OUT_DIR / "rfm_summary.csv", index=False)
